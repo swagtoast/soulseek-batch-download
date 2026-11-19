@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -29,6 +32,7 @@ from llm_formatter import (
 )
 from models import CollectionExport, Track
 from setup_ui import ensure_configured, is_first_run_needed, write_setup_configs
+from updater import apply_update_from_tarball, check_and_apply_update
 from url_utils import classify_url, extract_url_from_text, sanitize_filename
 from youtube_extractor import extract_youtube
 
@@ -369,7 +373,7 @@ class FirstRunSetupTests(unittest.TestCase):
                                 ) as mock_prompt:
                                     with patch("cli.extract_collection", return_value=fake_export):
                                         with patch("cli.download_collection", return_value=0) as mock_dl:
-                                            rc = cli.main([url])
+                                            rc = cli.main(["--no-update", url])
                 self.assertEqual(rc, 0)
                 mock_prompt.assert_called_once()
                 self.assertEqual(mock_prompt.call_args.kwargs.get("label"), expected_label)
@@ -629,6 +633,69 @@ class DownloaderAndConverterTests(unittest.TestCase):
             self.assertEqual(res_keep, (1, 0))
             self.assertTrue(flac_file.is_file())
             self.assertTrue(flac_file.with_suffix(".mp3").is_file())
+
+
+class AutoUpdaterTests(unittest.TestCase):
+    @staticmethod
+    def _build_fake_tarball(cli_marker: str) -> bytes:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            files = {
+                "repo-main/src/cli.py": f"# {cli_marker}\n".encode("utf-8"),
+                "repo-main/src/helper.py": b"VAL = 2\n",
+                "repo-main/README.md": b"# Updated README\n",
+                "repo-main/Soulseek Batch Pipeline.command": b"#!/bin/bash\necho updated\n",
+            }
+            for name, content in files.items():
+                info = tarfile.TarInfo(name=name)
+                info.size = len(content)
+                tf.addfile(info, io.BytesIO(content))
+        return buf.getvalue()
+
+    def test_apply_update_preserves_user_configs_and_replaces_src(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "config").mkdir()
+            (root / "src" / "cli.py").write_text("# old\n", encoding="utf-8")
+            (root / "src" / "slsk_setup.js").write_text("// legacy\n", encoding="utf-8")
+            (root / "config" / "sockseek.conf").write_text("username = keepme\npassword = secret\n", encoding="utf-8")
+            (root / "config" / "pipeline.json").write_text('{"convert_format": "mp3"}\n', encoding="utf-8")
+            (root / "Soulseek Batch Pipeline.command").write_text("#!/bin/bash\necho old\n", encoding="utf-8")
+
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.project_root = root
+            cfg.sockseek_conf = root / "config" / "sockseek.conf"
+
+            tar_bytes = self._build_fake_tarball("v2-updated")
+            with patch("updater._recompile_swift_helpers_if_needed"):
+                apply_update_from_tarball(cfg, tar_bytes)
+
+            self.assertIn("v2-updated", (root / "src" / "cli.py").read_text(encoding="utf-8"))
+            self.assertFalse((root / "src" / "slsk_setup.js").exists())
+            self.assertIn("username = keepme", (root / "config" / "sockseek.conf").read_text(encoding="utf-8"))
+            self.assertIn('"mp3"', (root / "config" / "pipeline.json").read_text(encoding="utf-8"))
+            self.assertIn("echo updated", (root / "Soulseek Batch Pipeline.command").read_text(encoding="utf-8"))
+
+    def test_updater_skips_git_repo_and_respects_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.project_root = root
+
+            with patch("updater.fetch_remote_commit_sha") as mock_fetch:
+                self.assertFalse(check_and_apply_update(cfg, force=False))
+                mock_fetch.assert_not_called()
+
+            # Remove .git -> non-git friend install respects 6h cooldown
+            (root / ".git").rmdir()
+            state_file = root / "config" / ".update_state.json"
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(f'{{"commit": "{"a" * 40}", "last_check": {time.time()}}}\n', encoding="utf-8")
+            with patch("updater.fetch_remote_commit_sha") as mock_fetch:
+                self.assertFalse(check_and_apply_update(cfg, force=False))
+                mock_fetch.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ L'installer scarica automaticamente tutto in `~/Applications/Soulseek Batch Down
 
 ## Funzionalità
 
+- **Auto-aggiornamento automatico**: ogni 6 ore (o su richiesta con `--update`) controlla GitHub in modo leggero (40 byte, timeout 2,5s) e aggiorna da solo gli script preservando credenziali, configurazioni, download e icone personalizzate (disattivabile con `--no-update`).
 - **Auto-ottimizzazione per ogni Mac**: rileva automaticamente architettura (`Apple Silicon` / `Intel`), RAM, core CPU e versione macOS per scegliere l'interfaccia nativa più veloce (finestra AppKit Swift su Apple Silicon/Mac potenti, dialog nativi macOS a 0% CPU e zero compilazione su Mac Intel più leggeri), calibrare i thread `yt-dlp` ed evitare di caricare modelli LLM troppo pesanti su Mac da 8 GB di RAM.
 - **Setup credenziali e cartella solo al primo avvio (Finder `Sfoglia…`)**: username, password e cartella di download si configurano una sola volta (puoi riaprirli quando vuoi con `--setup`).
 - **Scelta formato ad ogni download**: per qualsiasi link **Spotify** o **YouTube** (playlist, full album o brano singolo) compare il box compatto **`formato`** (`.flac (lossless)`, `.aiff (PCM 24-bit lossless)`, `.mp3 (320 kbps)`) con checkbox **`elimina file originale`**, preimpostato sull'ultima scelta usata.

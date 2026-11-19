@@ -83,6 +83,12 @@ cp "$SRC_ROOT/README.md" "$INSTALL_DIR/README.md"
 [ -f "$SRC_ROOT/config/pipeline.json.example" ] && cp "$SRC_ROOT/config/pipeline.json.example" "$INSTALL_DIR/config/"
 chmod +x "$INSTALL_DIR/Soulseek Batch Pipeline.command"
 
+# Seed auto-updater state with the installed commit SHA so the very first launch doesn't re-download immediately.
+INSTALLED_SHA="$(curl -fsSL --max-time 3 -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/$REPO_SLUG/commits/$REPO_BRANCH" 2>/dev/null || true)"
+if [ "${#INSTALLED_SHA}" -eq 40 ]; then
+    printf '{"commit": "%s", "last_check": %s}\n' "$INSTALLED_SHA" "$(date +%s)" > "$INSTALL_DIR/config/.update_state.json"
+fi
+
 echo "[2/6] Verifico Python 3..."
 find_working_python() {
     for p in \

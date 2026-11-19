@@ -4,6 +4,7 @@ runtime/
 lists/
 config/sockseek.conf
 config/pipeline.json
+config/.update_state.json
 __pycache__/
 *.pyc
 .DS_Store

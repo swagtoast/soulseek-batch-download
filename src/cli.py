@@ -19,6 +19,7 @@ from downloader import download_collection
 from models import CollectionExport
 from setup_ui import ensure_configured, is_first_run_needed
 from spotify_extractor import extract_spotify
+from updater import check_and_apply_update
 from url_utils import classify_url
 from youtube_extractor import extract_youtube
 
@@ -264,10 +265,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-gui", action="store_true", help="Disabilita finestre grafiche di input/setup")
     parser.add_argument("--no-finder", action="store_true", help="Non aprire il Finder al termine del download")
+    parser.add_argument("--update", action="store_true", help="Controlla e installa subito eventuali aggiornamenti da GitHub")
+    parser.add_argument("--no-update", action="store_true", help="Salta il controllo automatico aggiornamenti")
     parser.add_argument("--pause", action="store_true", help="Attendi Invio alla fine (utile da .command)")
     args = parser.parse_args(argv)
 
     cfg = load_config()
+
+    # Lightweight auto-update check (at most once every 6h; skipped on local git checkouts unless --update).
+    if args.update or (not args.no_update and not args.export_only):
+        updated = check_and_apply_update(cfg, force=args.update)
+        if updated:
+            if args.update and not args.url and not args.setup:
+                return 0
+            # Re-exec transparently with the freshly updated code (only when running as main CLI).
+            if argv is None:
+                os.environ["SLSK_JUST_UPDATED"] = "1"
+                restart_args = [a for a in sys.argv[1:] if a != "--update"]
+                os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *restart_args])
+        elif args.update and not args.url and not args.setup:
+            return 0
+
     did_first_run_setup = False
 
     # First-run-only setup (Soulseek credentials + Finder "Sfoglia..." folder picker).
