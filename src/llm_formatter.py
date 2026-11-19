@@ -54,8 +54,9 @@ VIDEO_SYSTEM_PROMPT = (
     "Determine:\n"
     "1. is_full_album (boolean): true if it is an album/EP upload, false if a single song.\n"
     "2. album_artist and album_title (clean, without '[Full Album]', '(1972)', 'HQ', etc.).\n"
-    "3. tracks: extract clean individual tracks from Chapters or Description if listed, "
-    "including duration_sec (integer or null) when timestamps/durations are provided.\n"
+    "3. tracks: extract EVERY single individual track from Chapters, Description, or Top Comments if listed "
+    "(do NOT omit any track, including the first and the last track), including duration_sec (integer or null) "
+    "when timestamps/durations are provided.\n"
     "Output strictly valid JSON:\n"
     '{"is_full_album": true, "album_artist": "...", "album_title": "...", '
     '"tracks": [{"artist": "...", "title": "...", "duration_sec": 210}]}'
@@ -74,12 +75,13 @@ _GARBAGE_BRACKETS_RE = re.compile(
     r"remaster(?:ed)?(?:\s*\d{4})?|\d{4})\s*[\)\]]",
     re.IGNORECASE,
 )
-_LEADING_NUM_RE = re.compile(r"^\s*(?:\d{1,3}\s*[.\)\-:]\s+)")
+_LEADING_NUM_RE = re.compile(r"^\s*(?:[A-Da-d]\d\s*[.\)\-:]?\s+|\d{1,3}\s*[.\)\-:]\s+)")
 _TIMESTAMP_LINE_RE = re.compile(
-    r"^\s*(?:[-*•]?\s*)?(?:\d{1,2}\s*[.\)]\s*)?"
-    r"(?:(?P<ts1>(?:\d{1,2}:)?\d{1,2}:\d{2})\s*[-–—|]?\s*(?P<title1>.+?)|"
-    r"(?P<title2>.+?)\s*[-–—|(]\s*(?P<ts2>(?:\d{1,2}:)?\d{1,2}:\d{2})\)?)\s*$"
+    r"^\s*(?:[-*•]?\s*)?(?:[A-Da-d]\d\s*[.\)\-:]?\s+|\d{1,2}\s*[.\)\-:]\s*)?"
+    r"(?:[\(\[]?(?P<ts1>(?:\d{1,2}:)?\d{1,2}:\d{2})[\)\]]?\s*[-–—|:.]?\s*(?P<title1>.+?)|"
+    r"(?P<title2>.+?)\s*(?:[-–—|(\[]\s*|\s+)(?P<ts2>(?:\d{1,2}:)?\d{1,2}:\d{2})[\)\]]?)\s*$"
 )
+_NUMBERED_TRACK_LINE_RE = re.compile(r"^\s*(?P<num>\d{1,2})\s*[.\)\-:]\s+(?P<title>.+?)\s*$")
 _ALBUM_KEYWORDS_RE = re.compile(r"\b(full\s+album|album\s+completo|full\s+ep)\b", re.IGNORECASE)
 
 
@@ -134,7 +136,7 @@ def parse_track_heuristic(raw_title: str, uploader: str = "", default_artist: st
 
 
 def extract_timestamp_lines(description: str, total_duration: int | None = None) -> list[Track]:
-    """Extract track names and durations from timestamped lines in a video description."""
+    """Extract track names and durations from timestamped lines in a description or comment."""
     entries: list[tuple[int, str]] = []
     for line in (description or "").splitlines():
         m = _TIMESTAMP_LINE_RE.match(line.strip())
@@ -142,7 +144,7 @@ def extract_timestamp_lines(description: str, total_duration: int | None = None)
             continue
         ts = m.group("ts1") or m.group("ts2")
         label = (m.group("title1") or m.group("title2") or "").strip(" -–—|")
-        if ts and label and len(label) >= 2:
+        if ts and label and len(label) >= 2 and not label.lower().startswith(("http://", "https://")):
             entries.append((parse_timestamp_seconds(ts), label))
 
     if len(entries) < 3:
@@ -157,6 +159,148 @@ def extract_timestamp_lines(description: str, total_duration: int | None = None)
         parsed.duration_sec = dur
         tracks.append(parsed)
     return tracks
+
+
+def extract_numbered_tracklist(text: str) -> list[Track]:
+    """Extract a clean sequential numbered tracklist (1. ..., 2. ..., N. ...) when timestamps are absent."""
+    best_run: list[str] = []
+    cur_run: list[str] = []
+    expected_num = 1
+
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            if len(cur_run) > len(best_run):
+                best_run = list(cur_run)
+            cur_run = []
+            expected_num = 1
+            continue
+        m = _NUMBERED_TRACK_LINE_RE.match(line)
+        if m:
+            num = int(m.group("num"))
+            title = m.group("title").strip(" -–—|")
+            if num == expected_num and len(title) >= 2 and not title.lower().startswith(("http://", "https://")):
+                cur_run.append(title)
+                expected_num += 1
+                continue
+            if num == 1 and len(title) >= 2:
+                if len(cur_run) > len(best_run):
+                    best_run = list(cur_run)
+                cur_run = [title]
+                expected_num = 2
+                continue
+        if len(cur_run) > len(best_run):
+            best_run = list(cur_run)
+        cur_run = []
+        expected_num = 1
+
+    if len(cur_run) > len(best_run):
+        best_run = list(cur_run)
+
+    if len(best_run) < 4:
+        return []
+    return [parse_track_heuristic(lbl) for lbl in best_run]
+
+
+def _extract_best_reference_tracks(
+    chapters: list[dict],
+    description: str,
+    top_comments: list[str],
+    total_duration: int | None,
+    uploader: str,
+) -> tuple[list[Track], str]:
+    """Pick the richest tracklist found across Chapters, Description, and Top Comments."""
+    candidates: list[tuple[list[Track], str]] = []
+
+    if len(chapters) >= 3:
+        ch_tracks: list[Track] = []
+        for ch in chapters:
+            st = ch.get("start_time")
+            en = ch.get("end_time")
+            ch_dur = int(en - st) if isinstance(st, (int, float)) and isinstance(en, (int, float)) and en > st else None
+            tr = parse_track_heuristic(str(ch.get("title") or ""), uploader)
+            tr.duration_sec = ch_dur
+            if tr.title:
+                ch_tracks.append(tr)
+        if len(ch_tracks) >= 3:
+            candidates.append((ch_tracks, "chapters"))
+
+    desc_ts = extract_timestamp_lines(description, total_duration)
+    if len(desc_ts) >= 3:
+        candidates.append((desc_ts, "description"))
+    else:
+        desc_num = extract_numbered_tracklist(description)
+        if len(desc_num) >= 4:
+            candidates.append((desc_num, "description"))
+
+    for idx, comment in enumerate(top_comments or []):
+        c_ts = extract_timestamp_lines(comment, total_duration)
+        if len(c_ts) >= 3:
+            candidates.append((c_ts, f"comment#{idx + 1}"))
+        else:
+            c_num = extract_numbered_tracklist(comment)
+            if len(c_num) >= 4:
+                candidates.append((c_num, f"comment#{idx + 1}"))
+
+    if not candidates:
+        return [], ""
+    # Prefer the candidate with the most tracks (tie-breaking by chapters > description > top comments).
+    best_tracks, source = max(candidates, key=lambda pair: len(pair[0]))
+    return best_tracks, source
+
+
+def _norm_title_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _recover_missing_album_tracks(
+    llm_tracks: list[Track],
+    ref_tracks: list[Track],
+    album_artist: str,
+    album_title: str,
+    uploader: str,
+) -> list[Track]:
+    """Ensure the LLM never drops tracks (e.g. the last track) that are present in chapters/description/comments."""
+    if not ref_tracks:
+        return llm_tracks
+    if not llm_tracks:
+        recovered: list[Track] = []
+        for tr in ref_tracks:
+            recovered.append(
+                Track(
+                    artist=tr.artist or album_artist,
+                    title=tr.title,
+                    album=album_title,
+                    duration_sec=tr.duration_sec,
+                    raw_title=tr.raw_title or tr.title,
+                    uploader=uploader,
+                )
+            )
+        return recovered
+
+    if len(llm_tracks) >= len(ref_tracks):
+        return llm_tracks
+
+    llm_keys = {_norm_title_key(tr.title) for tr in llm_tracks}
+    merged = list(llm_tracks)
+    for ref in ref_tracks:
+        rk = _norm_title_key(ref.title)
+        if not rk:
+            continue
+        if any(rk == lk or rk in lk or lk in rk for lk in llm_keys if lk):
+            continue
+        merged.append(
+            Track(
+                artist=ref.artist or album_artist,
+                title=ref.title,
+                album=album_title,
+                duration_sec=ref.duration_sec,
+                raw_title=ref.raw_title or ref.title,
+                uploader=uploader,
+            )
+        )
+        llm_keys.add(rk)
+    return merged
 
 
 def _parse_llm_json(raw_content: str) -> dict:
@@ -589,15 +733,25 @@ def format_youtube_video_with_llm(
     dur_sec = int(duration) if isinstance(duration, (int, float)) and duration > 0 else None
     chapters = meta.get("chapters") or []
     description = str(meta.get("description") or "")
+    top_comments = [str(c) for c in (meta.get("top_comments") or []) if str(c).strip()]
     yt_artist = str(meta.get("artist") or "").strip()
     yt_album = str(meta.get("album") or "").strip()
     yt_track = str(meta.get("track") or "").strip()
 
-    desc_tracks = extract_timestamp_lines(description, dur_sec)
+    ref_tracks, ref_source = _extract_best_reference_tracks(
+        chapters=chapters,
+        description=description,
+        top_comments=top_comments,
+        total_duration=dur_sec,
+        uploader=uploader,
+    )
+    if ref_tracks and ref_source.startswith("comment#"):
+        print(f"[YouTube] Tracklist trovata nei primi commenti ({len(ref_tracks)} tracce, {ref_source}).")
+
     has_album_signals = (
         bool(_ALBUM_KEYWORDS_RE.search(raw_title))
         or len(chapters) >= 3
-        or len(desc_tracks) >= 3
+        or len(ref_tracks) >= 3
         or (dur_sec is not None and dur_sec >= 900)
     )
 
@@ -609,7 +763,21 @@ def format_youtube_video_with_llm(
         chapter_lines.append(f"{i}. {ch.get('title', '')} ({ch_dur or '?'}s)")
 
     desc_excerpt_lines = [ln for ln in description.splitlines() if ln.strip()]
-    desc_excerpt = "\n".join(desc_excerpt_lines[:80])[:4000]
+    desc_excerpt = "\n".join(desc_excerpt_lines[:100])[:4500]
+
+    comments_block = ""
+    if top_comments:
+        # Prioritize any comment that looks like a tracklist (timestamps or numbered lines), then top comments.
+        scored_comments = sorted(
+            top_comments,
+            key=lambda c: (
+                len(extract_timestamp_lines(c, dur_sec)) * 10 + len(extract_numbered_tracklist(c)) * 5,
+                len(c),
+            ),
+            reverse=True,
+        )
+        chunks = [f"Comment {i + 1}:\n{c[:1800]}" for i, c in enumerate(scored_comments[:5])]
+        comments_block = "\n\nTop comments:\n" + "\n---\n".join(chunks)[:4000]
 
     if not has_album_signals:
         sys_p = SINGLE_VIDEO_SYSTEM_PROMPT
@@ -629,10 +797,11 @@ def format_youtube_video_with_llm(
             f"Metadata artist/album: {yt_artist} / {yt_album}\n"
             f"Chapters ({len(chapter_lines)}):\n" + "\n".join(chapter_lines[:60]) + "\n\n"
             f"Description excerpt:\n{desc_excerpt}"
+            f"{comments_block}"
         )
 
     data: dict | None = None
-    mlx_res = _try_mlx_batch(cfg, [{"system": sys_p, "user": usr_p}], max_tokens=1600)
+    mlx_res = _try_mlx_batch(cfg, [{"system": sys_p, "user": usr_p}], max_tokens=2400)
     if mlx_res and isinstance(mlx_res[0], dict):
         data = mlx_res[0]
     else:
@@ -670,7 +839,7 @@ def format_youtube_video_with_llm(
                     used_llm=True,
                 )
         else:
-            is_full_album = bool(data.get("is_full_album"))
+            is_full_album = bool(data.get("is_full_album")) or len(ref_tracks) >= 3
             album_artist = str(data.get("album_artist") or yt_artist or "").strip()
             album_title = str(data.get("album_title") or yt_album or "").strip()
             tracks: list[Track] = []
@@ -694,8 +863,7 @@ def format_youtube_video_with_llm(
                     )
 
             if is_full_album and (album_artist or album_title):
-                if not tracks and desc_tracks:
-                    tracks = desc_tracks
+                tracks = _recover_missing_album_tracks(tracks, ref_tracks, album_artist, album_title, uploader)
                 display = f"{album_artist} - {album_title}" if album_artist and album_title else (album_title or album_artist)
                 return CollectionExport(
                     kind="album",
@@ -731,21 +899,7 @@ def format_youtube_video_with_llm(
         guess = parse_track_heuristic(cleaned_title, uploader, default_artist=yt_artist)
         album_artist = yt_artist or guess.artist
         album_title = yt_album or guess.title
-        fallback_tracks = list(desc_tracks)
-        if not fallback_tracks and chapter_lines:
-            for ch in chapters:
-                st = ch.get("start_time")
-                en = ch.get("end_time")
-                ch_dur = int(en - st) if isinstance(st, (int, float)) and isinstance(en, (int, float)) and en > st else None
-                tr = parse_track_heuristic(str(ch.get("title") or ""), uploader, default_artist=album_artist)
-                tr.album = album_title
-                tr.duration_sec = ch_dur
-                fallback_tracks.append(tr)
-        else:
-            for tr in fallback_tracks:
-                if not tr.artist and album_artist:
-                    tr.artist = album_artist
-                tr.album = album_title
+        fallback_tracks = _recover_missing_album_tracks([], ref_tracks, album_artist, album_title, uploader)
 
         display = f"{album_artist} - {album_title}" if album_artist else album_title
         return CollectionExport(

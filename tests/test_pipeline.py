@@ -25,6 +25,7 @@ from llm_formatter import (
     OllamaSession,
     _mlx_is_available,
     _parse_llm_json,
+    extract_numbered_tracklist,
     extract_timestamp_lines,
     format_youtube_playlist_with_llm,
     format_youtube_video_with_llm,
@@ -284,6 +285,50 @@ class LlmFallbackAndYouTubeExtractorTests(unittest.TestCase):
         self.assertEqual(sess._pick_model(["qwen2.5:14b"]), "qwen2.5:14b")
         self.assertEqual(sess._pick_model(["qwen2.5:14b", "minicpm5-2b:latest"]), "minicpm5-2b:latest")
 
+    def test_youtube_full_album_extracts_tracklist_from_top_comments_and_never_drops_last_track(self) -> None:
+        # Also verify flexible timestamp & numbered parsers
+        flex_ts = extract_timestamp_lines("01. Intro 0:00\n02. Second Track (03:10)\n03. Final Track 07:45", total_duration=660)
+        self.assertEqual(len(flex_ts), 3)
+        self.assertEqual(flex_ts[2].title, "Final Track")
+        self.assertEqual(flex_ts[2].duration_sec, 195)
+
+        numbered = extract_numbered_tracklist("Tracklist:\n1. First\n2. Second\n3. Third\n4. Fourth\n")
+        self.assertEqual([t.title for t in numbered], ["First", "Second", "Third", "Fourth"])
+
+        cfg = load_config()
+        meta = {
+            "title": "Nu Genea - Bar Mediterraneo (2022) [Full Album]",
+            "uploader": "Vinyl Vault",
+            "duration": 2100,
+            "chapters": [],
+            "description": "Enjoy this great record!",
+            "top_comments": [
+                "Great album!!",
+                "Tracklist:\n00:00 Bar Mediterraneo\n04:10 Marechià\n08:30 Tienaté\n12:50 Rire",
+            ],
+        }
+        # Simulate LLM accidentally dropping the last track ('Rire')
+        incomplete_llm_reply = {
+            "is_full_album": True,
+            "album_artist": "Nu Genea",
+            "album_title": "Bar Mediterraneo",
+            "tracks": [
+                {"artist": "Nu Genea", "title": "Bar Mediterraneo", "duration_sec": 250},
+                {"artist": "Nu Genea", "title": "Marechià", "duration_sec": 260},
+                {"artist": "Nu Genea", "title": "Tienaté", "duration_sec": 260},
+            ],
+        }
+        with patch("llm_formatter._try_mlx_batch", return_value=[incomplete_llm_reply]) as mock_mlx:
+            export = format_youtube_video_with_llm(cfg, meta, "https://www.youtube.com/watch?v=fakealb")
+
+        # Verify top comments were passed to the LLM prompt AND the missing last track was recovered!
+        prompt_sent = mock_mlx.call_args.args[1][0]["user"]
+        self.assertIn("Top comments:", prompt_sent)
+        self.assertIn("12:50 Rire", prompt_sent)
+        self.assertEqual(export.kind, "album")
+        self.assertEqual(export.total_tracks, 4)
+        self.assertEqual([t.title for t in export.tracks], ["Bar Mediterraneo", "Marechià", "Tienaté", "Rire"])
+
 
 class FirstRunSetupTests(unittest.TestCase):
     def test_first_run_only_prompts_once_and_persists_configs_securely(self) -> None:
@@ -434,11 +479,16 @@ class DownloaderAndConverterTests(unittest.TestCase):
 
             def fake_run(cmd: list[str]) -> int:
                 calls.append(cmd)
+                if len(calls) == 2:
+                    out_sub = cfg.output_dir / "Daft Punk - Discovery"
+                    out_sub.mkdir(parents=True, exist_ok=True)
+                    (out_sub / "01 - One More Time.flac").write_bytes(b"A")
+                    (out_sub / "02 - Aerodynamic.flac").write_bytes(b"B")
                 return 1 if len(calls) == 1 else 0
 
             with patch("downloader._run_sockseek", side_effect=fake_run):
                 with patch("downloader._open_in_finder") as mock_finder:
-                    rc = download_collection(export, cfg)
+                    rc = download_collection(export, cfg, open_finder=False)
 
             self.assertEqual(rc, 0)
             self.assertEqual(len(calls), 2)
@@ -447,6 +497,96 @@ class DownloaderAndConverterTests(unittest.TestCase):
             self.assertIn("-a", calls[0])
             self.assertTrue(calls[1][1].endswith("Daft Punk - Discovery.csv"))
             mock_finder.assert_not_called()
+
+    def test_album_track_count_check_and_playlist_missing_last_track_rescue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config()
+            cfg.output_dir = root / "downloads"
+            cfg.lists_dir = root / "lists"
+            cfg.sockseek_bin = root / "sockseek"
+            cfg.sockseek_conf = root / "sockseek.conf"
+            cfg.sockseek_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+            cfg.sockseek_conf.write_text("username=x\n", encoding="utf-8")
+
+            # 1) Full Album returns rc=0 with only 2/3 tracks -> must rescue missing 3rd track into same folder
+            alb = CollectionExport(
+                kind="album",
+                name="Cymande - Cymande",
+                artist="Cymande",
+                album="Cymande",
+                total_tracks=3,
+                source_platform="spotify",
+                tracks=[
+                    Track(artist="Cymande", title="Zion I", album="Cymande", duration_sec=210),
+                    Track(artist="Cymande", title="One More", album="Cymande", duration_sec=186),
+                    Track(artist="Cymande", title="Mighty Heavy Load", album="Cymande", duration_sec=245),
+                ],
+            )
+            alb_calls: list[list[str]] = []
+            alb_rescue_csv_contents: list[str] = []
+
+            def fake_alb_run(cmd: list[str]) -> int:
+                alb_calls.append(cmd)
+                alb_dir = cfg.output_dir / "Cymande - Cymande (1972)"
+                alb_dir.mkdir(parents=True, exist_ok=True)
+                if len(alb_calls) == 1:
+                    (alb_dir / "01 - Zion I.flac").write_bytes(b"1")
+                    (alb_dir / "02 - One More.flac").write_bytes(b"2")
+                    return 0  # rc=0 even though 3rd track is missing!
+                alb_rescue_csv_contents.append(Path(cmd[1]).read_text(encoding="utf-8"))
+                (alb_dir / "03 - Mighty Heavy Load.flac").write_bytes(b"3")
+                return 0
+
+            with patch("downloader._run_sockseek", side_effect=fake_alb_run):
+                with patch("downloader._open_in_finder"):
+                    rc_alb = download_collection(alb, cfg, open_finder=False)
+
+            self.assertEqual(rc_alb, 0)
+            self.assertEqual(len(alb_calls), 2)
+            self.assertIn("--desperate", alb_calls[1])
+            self.assertIn("Mighty Heavy Load", alb_rescue_csv_contents[0])
+            self.assertNotIn("Zion I", alb_rescue_csv_contents[0])
+            self.assertNotIn("Length", alb_rescue_csv_contents[0])
+            self.assertTrue((cfg.output_dir / "Cymande - Cymande (1972)" / "03 - Mighty Heavy Load.flac").is_file())
+
+            # 2) Playlist misses the LAST track on pass 1 -> must rescue ONLY that last track into same folder
+            pl = CollectionExport(
+                kind="playlist",
+                name="Friend Playlist",
+                total_tracks=3,
+                source_platform="spotify",
+                tracks=[
+                    Track(artist="Artist A", title="First Song", duration_sec=200),
+                    Track(artist="Artist B", title="Middle Song", duration_sec=210),
+                    Track(artist="Artist C", title="Last Song", duration_sec=220),
+                ],
+            )
+            pl_calls: list[list[str]] = []
+            pl_rescue_csv_contents: list[str] = []
+
+            def fake_pl_run(cmd: list[str]) -> int:
+                pl_calls.append(cmd)
+                pl_dir = cfg.output_dir / "Friend Playlist"
+                pl_dir.mkdir(parents=True, exist_ok=True)
+                if len(pl_calls) == 1:
+                    (pl_dir / "01 - First Song.mp3").write_bytes(b"1")
+                    (pl_dir / "02 - Middle Song.mp3").write_bytes(b"2")
+                    return 0
+                pl_rescue_csv_contents.append(Path(cmd[1]).read_text(encoding="utf-8"))
+                (pl_dir / "03 - Last Song.mp3").write_bytes(b"3")
+                return 0
+
+            with patch("downloader._run_sockseek", side_effect=fake_pl_run):
+                with patch("downloader._open_in_finder"):
+                    rc_pl = download_collection(pl, cfg, convert_format="mp3", open_finder=False)
+
+            self.assertEqual(rc_pl, 0)
+            self.assertEqual(len(pl_calls), 2)
+            self.assertIn("--desperate", pl_calls[1])
+            self.assertIn("Last Song", pl_rescue_csv_contents[0])
+            self.assertNotIn("First Song", pl_rescue_csv_contents[0])
+            self.assertTrue((cfg.output_dir / "Friend Playlist" / "03 - Last Song.mp3").is_file())
 
     def test_download_opens_finder_after_flac_to_aiff_conversion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

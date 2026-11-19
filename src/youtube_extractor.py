@@ -9,7 +9,12 @@ import re
 import subprocess
 
 from config import PipelineConfig
-from llm_formatter import format_youtube_playlist_with_llm, format_youtube_video_with_llm
+from llm_formatter import (
+    _ALBUM_KEYWORDS_RE,
+    extract_timestamp_lines,
+    format_youtube_playlist_with_llm,
+    format_youtube_video_with_llm,
+)
 from models import CollectionExport
 from url_utils import ParsedUrl
 
@@ -130,6 +135,61 @@ def _enrich_ambiguous_entries(cfg: PipelineConfig, raw_entries: list[dict], max_
         list(pool.map(lambda e: _enrich_single_entry(cfg, e), targets))
 
 
+def _fetch_top_comments(cfg: PipelineConfig, url: str, limit: int = 15) -> list[str]:
+    """Fetch pinned & top-liked YouTube comments (no nested replies) to find album tracklists."""
+    try:
+        meta = _run_yt_dlp_json(
+            cfg,
+            [
+                "--dump-single-json",
+                "--skip-download",
+                "--get-comments",
+                "--extractor-args",
+                f"youtube:comment_sort=top;max_comments={limit},{limit},0,0",
+                url,
+            ],
+        )
+    except Exception:
+        return []
+
+    raw_comments = meta.get("comments") or []
+    ranked: list[tuple[int, int, str]] = []
+    for c in raw_comments:
+        if not isinstance(c, dict):
+            continue
+        text = str(c.get("text") or "").strip()
+        if not text:
+            continue
+        pinned = 1 if c.get("is_pinned") else 0
+        likes = int(c.get("like_count") or 0) if isinstance(c.get("like_count"), (int, float)) else 0
+        ranked.append((pinned, likes, text[:2500]))
+
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [text for _, _, text in ranked[:limit]]
+
+
+def _maybe_enrich_video_comments(cfg: PipelineConfig, meta: dict, url: str) -> None:
+    """For Full Album videos lacking chapters/description tracklist, fetch top comments automatically."""
+    raw_title = str(meta.get("title") or "")
+    duration = meta.get("duration")
+    dur_sec = int(duration) if isinstance(duration, (int, float)) and duration > 0 else None
+    chapters = meta.get("chapters") or []
+    description = str(meta.get("description") or "")
+
+    looks_like_album = bool(_ALBUM_KEYWORDS_RE.search(raw_title)) or (dur_sec is not None and dur_sec >= 900)
+    if not looks_like_album:
+        return
+    if len(chapters) >= 3:
+        return
+    if len(extract_timestamp_lines(description, dur_sec)) >= 3:
+        return
+
+    print("[YouTube] Controllo i primi commenti del video in cerca della tracklist completa...", flush=True)
+    comments = _fetch_top_comments(cfg, url, limit=15)
+    if comments:
+        meta["top_comments"] = comments
+
+
 def extract_youtube(parsed: ParsedUrl, cfg: PipelineConfig) -> CollectionExport:
     """Extract and LLM-normalize a YouTube playlist, album playlist, or full-album/single video."""
     if parsed.kind == "youtube_playlist":
@@ -174,6 +234,7 @@ def extract_youtube(parsed: ParsedUrl, cfg: PipelineConfig) -> CollectionExport:
 
     if parsed.kind == "youtube_video":
         meta = _run_yt_dlp_json(cfg, ["--dump-single-json", "--skip-download", parsed.url])
+        _maybe_enrich_video_comments(cfg, meta, parsed.url)
         return format_youtube_video_with_llm(cfg=cfg, meta=meta, source_url=parsed.url)
 
     raise YouTubeExtractionError(f"Tipo YouTube non supportato: {parsed.kind}")

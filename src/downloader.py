@@ -5,22 +5,26 @@ from __future__ import annotations
 import csv
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import unicodedata
 
 from config import PipelineConfig, normalize_convert_format
 from converter import convert_downloaded_flacs
-from models import CollectionExport
+from models import CollectionExport, Track
 
 
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".aiff", ".aif", ".wav", ".m4a", ".ogg", ".opus", ".alac"}
 
 
-def write_tracks_csv(export: CollectionExport, csv_path: Path) -> Path:
+def write_tracks_csv(export: CollectionExport, csv_path: Path, include_length: bool | None = None) -> Path:
     """Write tracks in RFC 4180 CSV format compatible with Sockseek."""
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    include_length = any(t.duration_sec is not None and t.duration_sec > 0 for t in export.tracks)
+    if include_length is None:
+        include_length = any(t.duration_sec is not None and t.duration_sec > 0 for t in export.tracks)
 
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
@@ -35,6 +39,141 @@ def write_tracks_csv(export: CollectionExport, csv_path: Path) -> Path:
                 row.append(str(track.duration_sec) if track.duration_sec and track.duration_sec > 0 else "")
             writer.writerow(row)
     return csv_path
+
+
+def _norm_text(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    ascii_only = decomposed.encode("ascii", "ignore").decode("ascii").lower()
+    return re.sub(r"[^a-z0-9]+", " ", ascii_only).strip()
+
+
+def _match_score(track: Track, file_stem_norm: str) -> float:
+    title_norm = _norm_text(track.title)
+    if not title_norm or not file_stem_norm:
+        return 0.0
+    if title_norm in file_stem_norm:
+        return 1.0
+    t_tokens = [tok for tok in title_norm.split() if len(tok) >= 2 or tok.isdigit()]
+    if not t_tokens:
+        t_tokens = title_norm.split()
+    f_tokens = set(file_stem_norm.split())
+    if not t_tokens or not f_tokens:
+        return 0.0
+    hits = sum(1 for tok in t_tokens if tok in f_tokens)
+    return hits / len(t_tokens)
+
+
+def find_missing_tracks(expected_tracks: list[Track], downloaded_audio: list[Path]) -> list[Track]:
+    """Identify which expected tracks are still missing among downloaded audio files (1-to-1 greedy match)."""
+    if not expected_tracks:
+        return []
+    if not downloaded_audio:
+        return list(expected_tracks)
+
+    file_norms = [_norm_text(p.stem) for p in downloaded_audio]
+    used_files: set[int] = set()
+    missing: list[Track] = []
+
+    for track in expected_tracks:
+        best_idx = -1
+        best_score = 0.0
+        for idx, f_norm in enumerate(file_norms):
+            if idx in used_files:
+                continue
+            sc = _match_score(track, f_norm)
+            if sc > best_score:
+                best_score = sc
+                best_idx = idx
+        if best_idx >= 0 and best_score >= 0.5:
+            used_files.add(best_idx)
+        else:
+            missing.append(track)
+
+    return missing
+
+
+def _rescue_missing_tracks(
+    missing_tracks: list[Track],
+    target_dir: Path,
+    cfg: PipelineConfig,
+    convert_format: str,
+) -> int:
+    """Run a relaxed, desperate rescue pass for ONLY the missing tracks directly into target_dir."""
+    if not missing_tracks:
+        return 0
+    names = ", ".join(f"{t.artist} - {t.title}" if t.artist else t.title for t in missing_tracks[:5])
+    suffix = f" (+ altri {len(missing_tracks) - 5})" if len(missing_tracks) > 5 else ""
+    print(f"\n[Recupero] Cerco {len(missing_tracks)} tracce mancanti con ricerca estesa: {names}{suffix}")
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    rescue_export = CollectionExport(
+        kind="playlist",
+        name=target_dir.name,
+        tracks=missing_tracks,
+        total_tracks=len(missing_tracks),
+    )
+    with tempfile.TemporaryDirectory(prefix="slsk_rescue_") as tmp:
+        rescue_csv = Path(tmp) / f"{target_dir.name}.csv"
+        write_tracks_csv(rescue_export, rescue_csv, include_length=False)
+        cmd = [
+            str(cfg.sockseek_bin),
+            str(rescue_csv),
+            "-c",
+            str(cfg.sockseek_conf),
+            "-o",
+            str(target_dir.parent),
+            "--no-write-index",
+            *_format_search_args(convert_format),
+            "--desperate",
+            "--remove-ft",
+            "--remove-brackets",
+            "--length-tol",
+            "-1",
+            "--no-skip-existing",
+        ]
+        return _run_sockseek(cmd)
+
+
+def _verify_and_rescue_tracks(
+    export: CollectionExport,
+    target_dir: Path,
+    cfg: PipelineConfig,
+    session_before_files: dict[Path, float],
+    convert_format: str,
+) -> None:
+    """Verify downloaded track count against expected tracks and automatically rescue any missing tracks."""
+    expected_tracks = export.tracks
+    expected_count = max(export.total_tracks or 0, len(expected_tracks))
+    if expected_count <= 0:
+        return
+
+    current_audio = _new_audio_files(session_before_files, cfg.output_dir)
+    if len(current_audio) >= expected_count:
+        print(f"[Controllo tracce] Completo: {len(current_audio)}/{expected_count} tracce scaricate.")
+        return
+
+    if not expected_tracks:
+        print(f"[Controllo tracce] Avviso: scaricate {len(current_audio)}/{expected_count} tracce.")
+        return
+
+    missing = find_missing_tracks(expected_tracks, current_audio)
+    if not missing:
+        print(f"[Controllo tracce] Scaricate {len(current_audio)}/{expected_count} tracce.")
+        return
+
+    print(f"[Controllo tracce] Scaricate {len(current_audio)}/{expected_count} tracce — mancano {len(missing)} brani.")
+    _rescue_missing_tracks(missing, target_dir, cfg, convert_format)
+
+    after_audio = _new_audio_files(session_before_files, cfg.output_dir)
+    still_missing = find_missing_tracks(expected_tracks, after_audio)
+    if not still_missing or len(after_audio) >= expected_count:
+        print(f"[Controllo tracce] Tutte le {len(after_audio)}/{expected_count} tracce scaricate!")
+    else:
+        missed_list = "; ".join(f"{t.artist} - {t.title}" if t.artist else t.title for t in still_missing)
+        print(
+            f"[Controllo tracce] Scaricate {len(after_audio)}/{expected_count} tracce. "
+            f"Non trovate su Soulseek ({len(still_missing)}): {missed_list}"
+        )
 
 
 def _snapshot_files(root: Path) -> dict[Path, float]:
@@ -252,10 +391,13 @@ def _execute_download(
 
     if effective_kind == "playlist":
         target_dir = cfg.output_dir / csv_path.stem
-        print(f"[Download] Playlist -> {target_dir}")
-        return _run_sockseek([base_cmd[0], str(csv_path), *base_cmd[1:]]), target_dir
+        print(f"[Download] Playlist ({len(export.tracks)} tracce) -> {target_dir}")
+        rc = _run_sockseek([base_cmd[0], str(csv_path), *base_cmd[1:]])
+        _verify_and_rescue_tracks(export, target_dir, cfg, session_before_files, convert_format)
+        return rc, target_dir
 
-    # Full Album mode: try complete album folder first, then fall back to track-by-track CSV.
+    # Full Album mode: try complete album folder first, verify track count, and rescue any missing tracks.
+    expected_count = max(export.total_tracks or 0, len(export.tracks))
     album_query = _build_album_query(export)
     album_cmd = [
         base_cmd[0],
@@ -265,57 +407,41 @@ def _execute_download(
         "keep",
         *base_cmd[1:],
     ]
-    if export.total_tracks and export.total_tracks >= 2:
-        album_cmd.extend(["--album-track-count", f"{export.total_tracks}+"])
+    if expected_count >= 2:
+        album_cmd.extend(["--album-track-count", f"{expected_count}+"])
 
-    print(f"[Download] Ricerca cartella Full Album su Soulseek: {album_query}")
+    count_label = f" ({expected_count} tracce attese)" if expected_count else ""
+    print(f"[Download] Ricerca cartella Full Album su Soulseek: {album_query}{count_label}")
     before_dirs = {p for p in cfg.output_dir.iterdir() if p.is_dir()}
 
     rc = _run_sockseek(album_cmd)
     new_audio = _new_audio_files(session_before_files, cfg.output_dir)
     _prune_empty_new_dirs(before_dirs, cfg.output_dir)
 
-    if rc == 0 and new_audio:
-        print(f"[OK] Full Album scaricato ({len(new_audio)} file) in: {new_audio[0].parent}")
+    if rc == 0 and new_audio and (expected_count == 0 or len(new_audio) >= expected_count):
+        print(f"[OK] Full Album completo ({len(new_audio)}/{expected_count or len(new_audio)} tracce) in: {new_audio[0].parent}")
         return 0, new_audio[0].parent
 
     if not export.tracks:
         if new_audio:
-            print(f"[Avviso] Album scaricato parzialmente ({len(new_audio)} file) in: {new_audio[0].parent}")
+            print(f"[Avviso] Album scaricato ({len(new_audio)} file) in: {new_audio[0].parent}")
             return rc, new_audio[0].parent
         print("[Errore] Nessuna cartella Full Album trovata e nessuna tracklist disponibile per il fallback.")
         return rc or 1, None
 
     if not new_audio:
         print("\n[Fallback] Cartella Full Album non trovata su Soulseek. Avvio download traccia-per-traccia...")
+        target_dir = cfg.output_dir / csv_path.stem
         fallback_rc = _run_sockseek([base_cmd[0], str(csv_path), *base_cmd[1:]])
-        return fallback_rc, cfg.output_dir / csv_path.stem
+        _verify_and_rescue_tracks(export, target_dir, cfg, session_before_files, convert_format)
+        return fallback_rc, target_dir
 
-    # Partial album folder downloaded: preserve already-fetched files and fetch missing tracks into same folder.
+    # Partial album folder downloaded (including rc == 0 with fewer tracks than expected):
+    # keep fetched files and rescue ONLY the missing tracks directly into the same folder.
     partial_dir = new_audio[0].parent
     if partial_dir != cfg.output_dir:
-        print(
-            f"\n[Fallback] Scaricate {len(new_audio)} tracce nella cartella '{partial_dir.name}'. "
-            "Cerco le tracce mancanti nella stessa cartella..."
-        )
-        matched_csv = cfg.lists_dir / f"{partial_dir.name}.csv"
-        write_tracks_csv(export, matched_csv)
-        fb_rc = _run_sockseek(
-            [
-                str(cfg.sockseek_bin),
-                str(matched_csv),
-                "-c",
-                str(cfg.sockseek_conf),
-                "-o",
-                str(partial_dir.parent),
-                "--skip-music-dir",
-                str(partial_dir),
-                "--skip-mode-music-dir",
-                "name",
-                *extra_args,
-            ]
-        )
-        return fb_rc, partial_dir
+        _verify_and_rescue_tracks(export, partial_dir, cfg, session_before_files, convert_format)
+        return 0, partial_dir
 
     return rc, None
 

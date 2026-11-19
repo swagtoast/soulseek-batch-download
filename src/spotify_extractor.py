@@ -139,7 +139,7 @@ def _extract_via_api(parsed: ParsedUrl, client_id: str, client_secret: str) -> C
             name=sanitize_filename(display_name, fallback="spotify_album"),
             artist=album_artist,
             album=album_title,
-            total_tracks=total_tracks or len(tracks),
+            total_tracks=max(total_tracks or 0, len(tracks)) or None,
             tracks=tracks,
             source_url=parsed.url,
             source_platform="spotify",
@@ -214,7 +214,7 @@ def _extract_via_embed(parsed: ParsedUrl) -> CollectionExport:
         artist = sub.split(",")[0].strip() if sub else subtitle.split(",")[0].strip()
         dur_ms = item.get("duration")
         dur_sec = int(dur_ms // 1000) if isinstance(dur_ms, (int, float)) and dur_ms > 0 else None
-        if title and artist:
+        if title:
             tracks.append(Track(artist=artist, title=title, album=album_name_for_tracks, duration_sec=dur_sec))
 
     if stype == "album":
