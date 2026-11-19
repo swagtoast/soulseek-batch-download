@@ -895,6 +895,7 @@ class DownloaderAndConverterTests(unittest.TestCase):
             self.assertIn("--no-write-index", cmd)
             self.assertEqual(cmd[cmd.index("--pref-format") + 1], "mp3")
             self.assertEqual(cmd[cmd.index("--pref-min-bitrate") + 1], "320")
+            self.assertEqual(cmd[cmd.index("--pref-max-bitrate") + 1], "320")
             # Only audio remains in downloaded folder; all junk + empty Artwork dir deleted; preexisting untouched
             self.assertTrue((pl_dir / "01 - Song One.mp3").is_file())
             self.assertFalse((pl_dir / "cover.jpg").exists())
@@ -904,6 +905,74 @@ class DownloaderAndConverterTests(unittest.TestCase):
             self.assertFalse((pl_dir / "_index.csv").exists())
             self.assertFalse((pl_dir / "Artwork").exists())
             self.assertTrue(preexisting.is_file())
+
+    def test_wav_and_aiff_downloaded_by_soulseek_are_converted_to_chosen_mp3_aiff_or_flac(self) -> None:
+        cfg = load_config()
+        if not Path(cfg.ffmpeg_bin).is_file() or not Path(cfg.ffprobe_bin).is_file():
+            self.skipTest("ffmpeg/ffprobe non disponibili")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # 1) User chose .mp3 -> Soulseek returned .wav, .aiff, and .flac -> ALL must become .mp3 320 kbps
+            mp3_dir = root / "mp3_case"
+            mp3_dir.mkdir()
+            wav_f = mp3_dir / "01 - Track Wav.wav"
+            aiff_f = mp3_dir / "02 - Track Aiff.aiff"
+            flac_f = mp3_dir / "03 - Track Flac.flac"
+            for out_p, codec in ((wav_f, "pcm_s16le"), (aiff_f, "pcm_s24be"), (flac_f, "flac")):
+                subprocess.run(
+                    [
+                        cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                        "-c:a", codec, str(out_p),
+                    ],
+                    check=True,
+                )
+            conv, fail = convert_downloaded_flacs(
+                [wav_f, aiff_f, flac_f],
+                target_format="mp3",
+                ffmpeg_bin=cfg.ffmpeg_bin,
+                ffprobe_bin=cfg.ffprobe_bin,
+                delete_original=True,
+            )
+            self.assertEqual((conv, fail), (3, 0))
+            for orig in (wav_f, aiff_f, flac_f):
+                self.assertFalse(orig.exists(), f"{orig.name} should be deleted after MP3 conversion")
+                self.assertTrue(orig.with_suffix(".mp3").is_file())
+
+            # 2) User chose .aiff -> Soulseek returned .wav -> must become .aiff 24-bit
+            aiff_dir = root / "aiff_case"
+            aiff_dir.mkdir()
+            wav2 = aiff_dir / "01 - Only Wav.wav"
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-c:a", "pcm_s16le", str(wav2),
+                ],
+                check=True,
+            )
+            c2, f2 = convert_downloaded_flacs([wav2], "aiff", cfg.ffmpeg_bin, cfg.ffprobe_bin, delete_original=True)
+            self.assertEqual((c2, f2), (1, 0))
+            self.assertFalse(wav2.exists())
+            self.assertTrue(wav2.with_suffix(".aiff").is_file())
+
+            # 3) User chose .flac -> Soulseek returned .wav -> must become .flac lossless
+            flac_dir = root / "flac_case"
+            flac_dir.mkdir()
+            wav3 = flac_dir / "01 - Only Wav.wav"
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-c:a", "pcm_s16le", str(wav3),
+                ],
+                check=True,
+            )
+            c3, f3 = convert_downloaded_flacs([wav3], "flac", cfg.ffmpeg_bin, cfg.ffprobe_bin, delete_original=True)
+            self.assertEqual((c3, f3), (1, 0))
+            self.assertFalse(wav3.exists())
+            self.assertTrue(wav3.with_suffix(".flac").is_file())
 
 
 class AutoUpdaterTests(unittest.TestCase):

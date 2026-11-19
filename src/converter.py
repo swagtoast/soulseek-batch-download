@@ -1,4 +1,4 @@
-"""Safe post-download FLAC -> AIFF (24-bit) / MP3 (320 kbps) converter preserving metadata, cover art, and MP3 files."""
+"""Safe post-download audio converter (FLAC/WAV/AIFF -> MP3 320 kbps, AIFF 24-bit, or FLAC) preserving metadata & cover art."""
 
 from __future__ import annotations
 
@@ -8,6 +8,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import uuid
+
+
+_CONVERTIBLE_SOURCES: dict[str, set[str]] = {
+    "mp3": {".flac", ".wav", ".aiff", ".aif", ".m4a", ".alac", ".ogg", ".opus"},
+    "aiff": {".flac", ".wav", ".alac"},
+    "flac": {".wav", ".aiff", ".aif", ".alac"},
+}
 
 
 def _probe_cover_codec(ffprobe_bin: str, source: Path) -> str | None:
@@ -75,6 +82,11 @@ def _verify_converted(ffprobe_bin: str, target: Path, target_format: str) -> boo
             s.get("codec_type") == "audio" and str(s.get("codec_name") or "") == "mp3"
             for s in streams
         )
+    if target_format == "flac":
+        return any(
+            s.get("codec_type") == "audio" and str(s.get("codec_name") or "") == "flac"
+            for s in streams
+        )
     return False
 
 
@@ -134,6 +146,18 @@ def _build_ffmpeg_args(
                 "1",
                 "-f",
                 "mp3",
+                str(temp_out),
+            ]
+        )
+    elif target_format == "flac":
+        args.extend(
+            [
+                "-map_metadata",
+                "0",
+                "-c:a",
+                "flac",
+                "-f",
+                "flac",
                 str(temp_out),
             ]
         )
@@ -210,41 +234,52 @@ def convert_downloaded_flacs(
     ffprobe_bin: str,
     delete_original: bool = True,
 ) -> tuple[int, int]:
-    """Convert downloaded .flac files to 'aiff' (24-bit PCM) or 'mp3' (320 kbps).
+    """Convert downloaded audio files to the requested format: 'mp3' (320 kbps), 'aiff' (24-bit PCM), or 'flac'.
 
-    When target_format is 'flac' or 'none', conversion is skipped completely.
-    Deletes original .flac files only when delete_original=True and ffprobe verification succeeds.
-    Already-downloaded .mp3 files are always left untouched.
+    - target_format='mp3': converts .flac, .wav, .aiff/.aif, .m4a/.alac, .ogg, .opus -> .mp3 (320 kbps CBR).
+    - target_format='aiff': converts .flac, .wav, .alac -> .aiff (PCM 24-bit); keeps already-.mp3 untouched.
+    - target_format='flac': converts uncompressed .wav, .aiff/.aif, .alac -> .flac (lossless); keeps .flac & .mp3 untouched.
+    Deletes original source files only when delete_original=True and ffprobe verification succeeds.
     Returns (converted_count, failed_count).
     """
     fmt = (target_format or "flac").strip().lower().lstrip(".")
-    if fmt not in {"aiff", "mp3"}:
+    if fmt == "none":
+        fmt = "flac"
+    if fmt not in _CONVERTIBLE_SOURCES:
         return (0, 0)
 
-    suffix = ".mp3" if fmt == "mp3" else ".aiff"
-    tag = "MP3 320" if fmt == "mp3" else "AIFF"
-    desc = "MP3 (320 kbps CBR)" if fmt == "mp3" else "AIFF (PCM 24-bit, massima qualità)"
+    suffix_map = {"mp3": ".mp3", "aiff": ".aiff", "flac": ".flac"}
+    tag_map = {"mp3": "MP3 320", "aiff": "AIFF", "flac": "FLAC"}
+    desc_map = {
+        "mp3": "MP3 (320 kbps CBR)",
+        "aiff": "AIFF (PCM 24-bit, massima qualità)",
+        "flac": "FLAC (lossless)",
+    }
+    suffix = suffix_map[fmt]
+    tag = tag_map[fmt]
+    desc = desc_map[fmt]
+    eligible_exts = _CONVERTIBLE_SOURCES[fmt]
 
-    flacs = [p for p in downloaded_audio if p.is_file() and p.suffix.lower() == ".flac"]
-    if not flacs:
+    sources = [p for p in downloaded_audio if p.is_file() and p.suffix.lower() in eligible_exts]
+    if not sources:
         mp3_count = sum(1 for p in downloaded_audio if p.suffix.lower() == ".mp3")
-        if mp3_count:
-            print(f"[{tag}] Nessun file .flac da convertire ({mp3_count} file .mp3 mantenuti invariati).")
+        if mp3_count and fmt != "flac":
+            print(f"[{tag}] Nessun file da convertire ({mp3_count} file .mp3 mantenuti invariati).")
         return (0, 0)
 
     keep_note = " — elimino originali" if delete_original else " — mantengo originali"
-    print(f"\n[{tag}] Conversione di {len(flacs)} file .flac in {desc}{keep_note}...")
+    print(f"\n[{tag}] Conversione di {len(sources)} file audio in {desc}{keep_note}...")
     converted = 0
     failed = 0
     replacements: dict[Path, Path] = {}
 
-    for idx, flac_path in enumerate(flacs, start=1):
-        temp_out = flac_path.with_name(f".{flac_path.stem}.converting-{uuid.uuid4().hex[:8]}{suffix}")
-        cover_codec = _probe_cover_codec(ffprobe_bin, flac_path)
+    for idx, src_path in enumerate(sources, start=1):
+        temp_out = src_path.with_name(f".{src_path.stem}.converting-{uuid.uuid4().hex[:8]}{suffix}")
+        cover_codec = _probe_cover_codec(ffprobe_bin, src_path)
 
         try:
             proc = subprocess.run(
-                _build_ffmpeg_args(ffmpeg_bin, flac_path, temp_out, fmt, cover_codec),
+                _build_ffmpeg_args(ffmpeg_bin, src_path, temp_out, fmt, cover_codec),
                 capture_output=True,
                 text=True,
                 check=False,
@@ -252,7 +287,7 @@ def convert_downloaded_flacs(
             if proc.returncode != 0 and cover_codec is not None:
                 temp_out.unlink(missing_ok=True)
                 proc = subprocess.run(
-                    _build_ffmpeg_args(ffmpeg_bin, flac_path, temp_out, fmt, None),
+                    _build_ffmpeg_args(ffmpeg_bin, src_path, temp_out, fmt, None),
                     capture_output=True,
                     text=True,
                     check=False,
@@ -260,19 +295,19 @@ def convert_downloaded_flacs(
 
             if proc.returncode != 0 or not _verify_converted(ffprobe_bin, temp_out, fmt):
                 err = (proc.stderr or "").strip() or "verifica ffprobe fallita"
-                print(f"  [{idx}/{len(flacs)}] ERRORE {flac_path.name}: {err} (FLAC originale mantenuto)")
+                print(f"  [{idx}/{len(sources)}] ERRORE {src_path.name}: {err} (file originale mantenuto)")
                 failed += 1
                 continue
 
-            final_out = _unique_target_path(flac_path, suffix)
+            final_out = _unique_target_path(src_path, suffix)
             shutil.move(str(temp_out), str(final_out))
             if delete_original:
-                flac_path.unlink()
-                replacements[flac_path] = final_out
+                src_path.unlink()
+                replacements[src_path] = final_out
             converted += 1
-            print(f"  [{idx}/{len(flacs)}] {flac_path.name} -> {final_out.name}")
+            print(f"  [{idx}/{len(sources)}] {src_path.name} -> {final_out.name}")
         except Exception as exc:
-            print(f"  [{idx}/{len(flacs)}] ERRORE {flac_path.name}: {exc} (FLAC originale mantenuto)")
+            print(f"  [{idx}/{len(sources)}] ERRORE {src_path.name}: {exc} (file originale mantenuto)")
             failed += 1
         finally:
             temp_out.unlink(missing_ok=True)
@@ -280,7 +315,7 @@ def convert_downloaded_flacs(
     if delete_original:
         _update_index_csv(replacements)
     mp3_count = sum(1 for p in downloaded_audio if p.suffix.lower() == ".mp3")
-    if mp3_count:
+    if mp3_count and fmt != "mp3":
         print(f"[{tag}] Mantenuti invariati {mp3_count} file .mp3 originali.")
     print(f"[{tag}] Completato: {converted} convertiti in {tag}, {failed} errori.")
     return (converted, failed)

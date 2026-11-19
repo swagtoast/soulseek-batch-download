@@ -324,6 +324,8 @@ def _format_search_args(convert_format: str) -> list[str]:
             "mp3",
             "--pref-min-bitrate",
             "320",
+            "--pref-max-bitrate",
+            "320",
             "--format",
             "mp3,flac,aiff,wav",
         ]
@@ -352,8 +354,6 @@ def _maybe_convert(
     before_files: dict[Path, float],
 ) -> None:
     fmt = normalize_convert_format(convert_format)
-    if fmt == "flac":
-        return
     new_audio = _new_audio_files(before_files, cfg.output_dir)
     if not new_audio:
         return

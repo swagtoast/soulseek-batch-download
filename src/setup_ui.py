@@ -65,12 +65,14 @@ def write_setup_configs(
     resolved_out = output_dir.expanduser()
     resolved_out.mkdir(parents=True, exist_ok=True)
 
+    pref_fmt = "mp3" if fmt == "mp3" else ("aiff,flac,wav" if fmt == "aiff" else "flac,aiff,wav")
+    format_list = "mp3,flac,aiff,wav" if fmt == "mp3" else "flac,aiff,wav,mp3"
     cfg.sockseek_conf.write_text(
         f"username = {username}\n"
         f"password = {password}\n"
         f"output-dir = {resolved_out}\n"
-        "pref-format = flac,aiff,wav\n"
-        "format = flac,aiff,wav,mp3\n"
+        f"pref-format = {pref_fmt}\n"
+        f"format = {format_list}\n"
         "pref-min-bitrate = 320\n"
         "length-tol = 5\n"
         "pref-length-tol = 5\n"
