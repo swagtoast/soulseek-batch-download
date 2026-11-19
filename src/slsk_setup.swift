@@ -6,12 +6,23 @@ struct SetupResult: Codable {
     let username: String
     let password: String
     let output_dir: String
-    let convert_flac_to_aiff: Bool
+    let convert_format: String
+}
+
+func normalizeFormat(_ raw: String) -> String {
+    switch raw.lowercased() {
+    case "aiff", "aif", "1", "true", "yes":
+        return "aiff"
+    case "mp3", "mp3_320", "mp3-320", "320":
+        return "mp3"
+    default:
+        return "none"
+    }
 }
 
 var defaultDir = (NSHomeDirectory() as NSString).appendingPathComponent("Music/Soulseek Downloads")
 var defaultUser = ""
-var defaultConvert = false
+var defaultFormat = "none"
 
 let args = CommandLine.arguments
 var idx = 1
@@ -23,9 +34,11 @@ while idx < args.count {
     } else if arg == "--default-user", idx + 1 < args.count {
         defaultUser = args[idx + 1]
         idx += 2
+    } else if arg == "--default-format", idx + 1 < args.count {
+        defaultFormat = normalizeFormat(args[idx + 1])
+        idx += 2
     } else if arg == "--default-convert", idx + 1 < args.count {
-        let v = args[idx + 1].lowercased()
-        defaultConvert = (v == "1" || v == "true" || v == "yes")
+        defaultFormat = normalizeFormat(args[idx + 1])
         idx += 2
     } else {
         idx += 1
@@ -37,13 +50,14 @@ final class SetupController: NSObject, NSWindowDelegate {
     let userField: NSTextField
     let passField: NSSecureTextField
     let dirField: NSTextField
-    let convertCheck: NSButton
+    let formatPopup: NSPopUpButton
     let errorLabel: NSTextField
+    let formatKeys = ["none", "aiff", "mp3"]
     var confirmed = false
 
-    init(defaultUser: String, defaultDir: String, defaultConvert: Bool) {
+    init(defaultUser: String, defaultDir: String, defaultFormat: String) {
         let width: CGFloat = 520
-        let height: CGFloat = 340
+        let height: CGFloat = 370
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
@@ -55,14 +69,10 @@ final class SetupController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.center()
 
-        userField = NSTextField(frame: NSRect(x: 24, y: 210, width: width - 48, height: 24))
-        passField = NSSecureTextField(frame: NSRect(x: 24, y: 152, width: width - 48, height: 24))
-        dirField = NSTextField(frame: NSRect(x: 24, y: 94, width: width - 144, height: 24))
-        convertCheck = NSButton(
-            checkboxWithTitle: "Converti FLAC → AIFF automaticamente (elimina i .flac; lascia gli .mp3 in .mp3)",
-            target: nil,
-            action: nil
-        )
+        userField = NSTextField(frame: NSRect(x: 24, y: 240, width: width - 48, height: 24))
+        passField = NSSecureTextField(frame: NSRect(x: 24, y: 182, width: width - 48, height: 24))
+        dirField = NSTextField(frame: NSRect(x: 24, y: 124, width: width - 144, height: 24))
+        formatPopup = NSPopUpButton(frame: NSRect(x: 24, y: 62, width: width - 48, height: 26), pullsDown: false)
         errorLabel = NSTextField(labelWithString: "")
 
         super.init()
@@ -72,7 +82,7 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         let title = NSTextField(labelWithString: "Benvenuto! Configura il tuo account Soulseek")
         title.font = NSFont.boldSystemFont(ofSize: 15)
-        title.frame = NSRect(x: 24, y: 302, width: width - 48, height: 22)
+        title.frame = NSRect(x: 24, y: 332, width: width - 48, height: 22)
         content.addSubview(title)
 
         let subtitle = NSTextField(
@@ -82,12 +92,12 @@ final class SetupController: NSObject, NSWindowDelegate {
         subtitle.textColor = .secondaryLabelColor
         subtitle.lineBreakMode = .byWordWrapping
         subtitle.maximumNumberOfLines = 2
-        subtitle.frame = NSRect(x: 24, y: 264, width: width - 48, height: 34)
+        subtitle.frame = NSRect(x: 24, y: 294, width: width - 48, height: 34)
         content.addSubview(subtitle)
 
         let userLabel = NSTextField(labelWithString: "Username Soulseek:")
         userLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        userLabel.frame = NSRect(x: 24, y: 238, width: width - 48, height: 16)
+        userLabel.frame = NSRect(x: 24, y: 268, width: width - 48, height: 16)
         content.addSubview(userLabel)
         userField.stringValue = defaultUser
         userField.placeholderString = "Il tuo username Soulseek"
@@ -95,14 +105,14 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         let passLabel = NSTextField(labelWithString: "Password Soulseek:")
         passLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        passLabel.frame = NSRect(x: 24, y: 180, width: width - 48, height: 16)
+        passLabel.frame = NSRect(x: 24, y: 210, width: width - 48, height: 16)
         content.addSubview(passLabel)
         passField.placeholderString = "La tua password Soulseek"
         content.addSubview(passField)
 
         let dirLabel = NSTextField(labelWithString: "Cartella di download:")
         dirLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        dirLabel.frame = NSRect(x: 24, y: 122, width: width - 48, height: 16)
+        dirLabel.frame = NSRect(x: 24, y: 152, width: width - 48, height: 16)
         content.addSubview(dirLabel)
         dirField.stringValue = defaultDir
         dirField.placeholderString = defaultDir
@@ -110,13 +120,23 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         let browseBtn = NSButton(title: "Sfoglia…", target: self, action: #selector(didTapBrowse))
         browseBtn.bezelStyle = .rounded
-        browseBtn.frame = NSRect(x: width - 112, y: 91, width: 88, height: 28)
+        browseBtn.frame = NSRect(x: width - 112, y: 121, width: 88, height: 28)
         content.addSubview(browseBtn)
 
-        convertCheck.state = defaultConvert ? .on : .off
-        convertCheck.font = NSFont.systemFont(ofSize: 12)
-        convertCheck.frame = NSRect(x: 24, y: 56, width: width - 48, height: 22)
-        content.addSubview(convertCheck)
+        let convLabel = NSTextField(labelWithString: "Conversione automatica dei file .flac scaricati:")
+        convLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        convLabel.frame = NSRect(x: 24, y: 94, width: width - 48, height: 16)
+        content.addSubview(convLabel)
+
+        formatPopup.addItems(withTitles: [
+            "Nessuna (mantieni FLAC e MP3 originali)",
+            "AIFF (PCM 24-bit lossless — elimina .flac, lascia .mp3)",
+            "MP3 (320 kbps — elimina .flac, lascia .mp3 invariati)",
+        ])
+        if let selIdx = formatKeys.firstIndex(of: defaultFormat) {
+            formatPopup.selectItem(at: selIdx)
+        }
+        content.addSubview(formatPopup)
 
         errorLabel.font = NSFont.systemFont(ofSize: 11.5)
         errorLabel.textColor = .systemRed
@@ -206,19 +226,20 @@ final class SetupController: NSObject, NSWindowDelegate {
         }
         NSApp.runModal(for: window)
         let expandedDir = (dirField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+        let sel = max(0, min(formatPopup.indexOfSelectedItem, formatKeys.count - 1))
         return SetupResult(
             confirmed: confirmed,
             username: userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
             password: passField.stringValue,
             output_dir: expandedDir,
-            convert_flac_to_aiff: convertCheck.state == .on
+            convert_format: formatKeys[sel]
         )
     }
 }
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
-let controller = SetupController(defaultUser: defaultUser, defaultDir: defaultDir, defaultConvert: defaultConvert)
+let controller = SetupController(defaultUser: defaultUser, defaultDir: defaultDir, defaultFormat: defaultFormat)
 let result = controller.run()
 if let data = try? JSONEncoder().encode(result), let json = String(data: data, encoding: .utf8) {
     print(json)

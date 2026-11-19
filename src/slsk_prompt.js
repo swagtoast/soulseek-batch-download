@@ -2,6 +2,13 @@ ObjC.import("AppKit");
 ObjC.import("Foundation");
 ObjC.import("stdlib");
 
+function normalizeFormat(raw) {
+  var v = String(raw || "").toLowerCase();
+  if (v === "aiff" || v === "aif" || v === "1" || v === "true" || v === "yes") return "aiff";
+  if (v === "mp3" || v === "mp3_320" || v === "mp3-320" || v === "320") return "mp3";
+  return "none";
+}
+
 function clipboardMusicURL() {
   try {
     var pb = $.NSPasteboard.generalPasteboard;
@@ -25,13 +32,12 @@ function clipboardMusicURL() {
 
 function run(argv) {
   var prefilledURL = "";
-  var defaultConvert = false;
+  var defaultFormat = "none";
   for (var i = 0; i < argv.length; i++) {
     if (argv[i] === "--url" && i + 1 < argv.length) {
       prefilledURL = argv[++i];
-    } else if (argv[i] === "--default-convert" && i + 1 < argv.length) {
-      var v = argv[++i].toLowerCase();
-      defaultConvert = v === "1" || v === "true" || v === "yes";
+    } else if ((argv[i] === "--default-format" || argv[i] === "--default-convert") && i + 1 < argv.length) {
+      defaultFormat = normalizeFormat(argv[++i]);
     }
   }
 
@@ -53,42 +59,44 @@ function run(argv) {
   alert.addButtonWithTitle("Scarica");
   alert.addButtonWithTitle("Annulla");
 
-  var checkbox = $.NSButton.checkboxWithTitleTargetAction(
-    "Converti FLAC → AIFF (elimina i .flac originali; lascia gli .mp3 in .mp3)",
-    null,
-    null
-  );
-  checkbox.state = defaultConvert ? $.NSControlStateValueOn : $.NSControlStateValueOff;
-  checkbox.sizeToFit;
+  var formatKeys = ["none", "aiff", "mp3"];
+  var fieldWidth = 460;
 
-  var cbFrame = checkbox.frame;
-  var fieldWidth = Math.max(cbFrame.size.width, 430);
+  var convLabel = $.NSTextField.labelWithString("Conversione file .flac scaricati:");
+  var formatPopup = $.NSPopUpButton.alloc.initWithFramePullsDown(
+    $.NSMakeRect(0, 2, fieldWidth, 26),
+    false
+  );
+  formatPopup.addItemWithTitle("Nessuna (mantieni FLAC e MP3 originali)");
+  formatPopup.addItemWithTitle("AIFF (PCM 24-bit lossless — elimina .flac, lascia .mp3)");
+  formatPopup.addItemWithTitle("MP3 (320 kbps — elimina .flac, lascia .mp3 invariati)");
+  var selIdx = formatKeys.indexOf(defaultFormat);
+  formatPopup.selectItemAtIndex(selIdx >= 0 ? selIdx : 0);
+
   var urlField = null;
 
   if (needsInput) {
-    var accessory = $.NSView.alloc.initWithFrame(
-      $.NSMakeRect(0, 0, fieldWidth, 58)
-    );
-    urlField = $.NSTextField.alloc.initWithFrame(
-      $.NSMakeRect(0, 30, fieldWidth, 24)
-    );
+    var accessory = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, fieldWidth, 88));
+    urlField = $.NSTextField.alloc.initWithFrame($.NSMakeRect(0, 60, fieldWidth, 24));
     urlField.placeholderString =
       "https://open.spotify.com/... oppure https://www.youtube.com/...";
     var clip = clipboardMusicURL();
     if (clip) {
       urlField.stringValue = clip;
     }
-    checkbox.setFrameOrigin($.NSMakePoint(0, 2));
+    convLabel.frame = $.NSMakeRect(0, 34, fieldWidth, 16);
+    formatPopup.frame = $.NSMakeRect(0, 2, fieldWidth, 26);
     accessory.addSubview(urlField);
-    accessory.addSubview(checkbox);
+    accessory.addSubview(convLabel);
+    accessory.addSubview(formatPopup);
     alert.accessoryView = accessory;
     alert.window.initialFirstResponder = urlField;
   } else {
-    var acc = $.NSView.alloc.initWithFrame(
-      $.NSMakeRect(0, 0, fieldWidth, cbFrame.size.height + 6)
-    );
-    checkbox.setFrameOrigin($.NSMakePoint(0, 3));
-    acc.addSubview(checkbox);
+    var acc = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, fieldWidth, 54));
+    convLabel.frame = $.NSMakeRect(0, 32, fieldWidth, 16);
+    formatPopup.frame = $.NSMakeRect(0, 2, fieldWidth, 26);
+    acc.addSubview(convLabel);
+    acc.addSubview(formatPopup);
     alert.accessoryView = acc;
   }
 
@@ -100,13 +108,13 @@ function run(argv) {
   var finalURL = urlField
     ? ObjC.unwrap(urlField.stringValue).trim()
     : prefilledURL.trim();
-  var convert = checkbox.state === $.NSControlStateValueOn;
+  var chosenIdx = formatPopup.indexOfSelectedItem;
+  if (chosenIdx < 0 || chosenIdx >= formatKeys.length) chosenIdx = 0;
   var ok = confirmed && finalURL.length > 0;
 
-  var payload = JSON.stringify({
+  return JSON.stringify({
     confirmed: ok,
     url: finalURL,
-    convert_flac_to_aiff: convert,
+    convert_format: formatKeys[chosenIdx],
   });
-  return payload;
 }

@@ -5,5 +5,5 @@
   "ollama_url": "http://127.0.0.1:11434",
   "ollama_model": "auto",
   "llm_batch_size": 25,
-  "convert_flac_to_aiff": false
+  "convert_format": "none"
 }

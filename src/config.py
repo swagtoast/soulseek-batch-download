@@ -10,6 +10,19 @@ import shutil
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+VALID_CONVERT_FORMATS = ("none", "aiff", "mp3")
+
+
+def normalize_convert_format(value: object) -> str:
+    """Normalize a conversion format setting into 'none', 'aiff', or 'mp3'."""
+    if isinstance(value, bool):
+        return "aiff" if value else "none"
+    s = str(value or "").strip().lower()
+    if s in {"aiff", "aif", "true", "1", "yes"}:
+        return "aiff"
+    if s in {"mp3", "mp3_320", "mp3-320", "320"}:
+        return "mp3"
+    return "none"
 
 
 @dataclass
@@ -39,7 +52,11 @@ class PipelineConfig:
     llm_batch_size: int
     spotify_client_id: str
     spotify_client_secret: str
-    convert_flac_to_aiff: bool
+    convert_format: str
+
+    @property
+    def convert_flac_to_aiff(self) -> bool:
+        return self.convert_format == "aiff"
 
 
 def _resolve_binary(configured: str, fallback_name: str, extra_paths: tuple[str, ...]) -> str:
@@ -155,19 +172,25 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         llm_batch_size=max(5, int(raw.get("llm_batch_size") or 25)),
         spotify_client_id=str(os.environ.get("SPOTIFY_CLIENT_ID") or raw.get("spotify_client_id") or ""),
         spotify_client_secret=str(os.environ.get("SPOTIFY_CLIENT_SECRET") or raw.get("spotify_client_secret") or ""),
-        convert_flac_to_aiff=bool(raw.get("convert_flac_to_aiff", False)),
+        convert_format=(
+            normalize_convert_format(raw["convert_format"])
+            if "convert_format" in raw
+            else normalize_convert_format(raw.get("convert_flac_to_aiff", False))
+        ),
     )
 
 
-def save_convert_preference(cfg: PipelineConfig, enabled: bool) -> None:
-    """Persist the FLAC->AIFF checkbox preference cleanly in config/pipeline.json."""
+def save_convert_preference(cfg: PipelineConfig, target_format: str | bool) -> None:
+    """Persist the FLAC conversion format ('none', 'aiff', or 'mp3') cleanly in config/pipeline.json."""
     if not cfg.config_file.is_file():
         return
+    fmt = normalize_convert_format(target_format)
     try:
         raw = json.loads(cfg.config_file.read_text(encoding="utf-8"))
-        if raw.get("convert_flac_to_aiff") == enabled:
+        if raw.get("convert_format") == fmt and raw.get("convert_flac_to_aiff") == (fmt == "aiff"):
             return
-        raw["convert_flac_to_aiff"] = bool(enabled)
+        raw["convert_format"] = fmt
+        raw["convert_flac_to_aiff"] = fmt == "aiff"
         cfg.config_file.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     except OSError:
         pass

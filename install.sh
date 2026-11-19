@@ -146,12 +146,12 @@ xattr -dr com.apple.quarantine "$INSTALL_DIR/bin" 2>/dev/null || true
 if [ -n "${SLSK_USER:-}" ] && [ -n "${SLSK_PASS:-}" ]; then
     INSTALL_DIR="$INSTALL_DIR" SLSK_USER="$SLSK_USER" SLSK_PASS="$SLSK_PASS" \
     DOWNLOAD_DIR="${SLSK_DOWNLOAD_DIR:-$HOME/Music/Soulseek Downloads}" \
-    DEFAULT_AIFF="${SLSK_DEFAULT_AIFF:-false}" "$PYTHON_BIN" - << 'PYEOF'
+    CONVERT_FMT="${SLSK_CONVERT_FORMAT:-${SLSK_DEFAULT_AIFF:-none}}" "$PYTHON_BIN" - << 'PYEOF'
 import os, sys
 from pathlib import Path
 install_dir = Path(os.environ["INSTALL_DIR"])
 sys.path.insert(0, str(install_dir / "src"))
-from config import load_config
+from config import load_config, normalize_convert_format
 from setup_ui import write_setup_configs
 cfg = load_config(install_dir / "config" / "pipeline.json")
 write_setup_configs(
@@ -159,7 +159,7 @@ write_setup_configs(
     username=os.environ["SLSK_USER"],
     password=os.environ["SLSK_PASS"],
     output_dir=Path(os.environ["DOWNLOAD_DIR"]).expanduser(),
-    convert_flac_to_aiff=os.environ["DEFAULT_AIFF"].lower() == "true",
+    convert_format=normalize_convert_format(os.environ["CONVERT_FMT"]),
 )
 PYEOF
 fi

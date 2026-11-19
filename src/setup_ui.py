@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 
-from config import PipelineConfig, load_config
+from config import PipelineConfig, load_config, normalize_convert_format
 
 
 _PLACEHOLDER_VALUES = {
@@ -55,9 +55,10 @@ def write_setup_configs(
     username: str,
     password: str,
     output_dir: Path,
-    convert_flac_to_aiff: bool,
+    convert_format: str | bool = "none",
 ) -> None:
     """Persist Soulseek credentials and pipeline preferences with owner-only (600) permissions."""
+    fmt = normalize_convert_format(convert_format)
     cfg.sockseek_conf.parent.mkdir(parents=True, exist_ok=True)
     cfg.config_file.parent.mkdir(parents=True, exist_ok=True)
     resolved_out = output_dir.expanduser()
@@ -93,7 +94,8 @@ def write_setup_configs(
             "ollama_url": existing.get("ollama_url", "http://127.0.0.1:11434"),
             "ollama_model": existing.get("ollama_model", "auto"),
             "llm_batch_size": existing.get("llm_batch_size", 25),
-            "convert_flac_to_aiff": bool(convert_flac_to_aiff),
+            "convert_format": fmt,
+            "convert_flac_to_aiff": fmt == "aiff",
             "setup_completed": True,
         }
     )
@@ -117,8 +119,8 @@ def _run_gui_setup(cfg: PipelineConfig) -> dict | None:
     extra_args = [
         "--default-dir",
         str(cfg.output_dir),
-        "--default-convert",
-        "true" if cfg.convert_flac_to_aiff else "false",
+        "--default-format",
+        cfg.convert_format,
     ]
     if existing_user:
         extra_args.extend(["--default-user", existing_user])
@@ -161,21 +163,27 @@ def _run_terminal_setup(cfg: PipelineConfig) -> dict:
     d = input(f"Cartella download [{default_dir}]: ").strip() or default_dir
     d = str(Path(d).expanduser())
 
-    hint = "S/n" if cfg.convert_flac_to_aiff else "s/N"
-    ans = input(f"Convertire automaticamente FLAC -> AIFF (MP3 invariati)? [{hint}]: ").strip().lower()
-    if ans in {"s", "si", "sì", "y", "yes"}:
-        conv = True
-    elif ans in {"n", "no"}:
-        conv = False
+    print("Conversione automatica dei file .flac scaricati:")
+    print("  1) Nessuna (mantieni FLAC e MP3 originali)")
+    print("  2) AIFF (PCM 24-bit lossless, elimina .flac)")
+    print("  3) MP3 (320 kbps, elimina .flac, lascia .mp3 invariati)")
+    default_idx = {"none": "1", "aiff": "2", "mp3": "3"}.get(cfg.convert_format, "1")
+    ans = input(f"Scegli [1/2/3, default {default_idx}]: ").strip().lower()
+    if ans in {"2", "aiff", "aif"}:
+        conv_fmt = "aiff"
+    elif ans in {"3", "mp3", "320"}:
+        conv_fmt = "mp3"
+    elif ans in {"1", "none", "no", "n"}:
+        conv_fmt = "none"
     else:
-        conv = cfg.convert_flac_to_aiff
+        conv_fmt = cfg.convert_format
 
     return {
         "confirmed": True,
         "username": u,
         "password": p,
         "output_dir": d,
-        "convert_flac_to_aiff": conv,
+        "convert_format": conv_fmt,
     }
 
 
@@ -197,11 +205,13 @@ def ensure_configured(cfg: PipelineConfig, force_setup: bool = False, no_gui: bo
     username = re.sub(r"[\r\n]+", "", str(result.get("username") or "")).strip()
     password = re.sub(r"[\r\n]+", "", str(result.get("password") or ""))
     output_dir = Path(str(result.get("output_dir") or cfg.output_dir)).expanduser()
-    convert_aiff = bool(result.get("convert_flac_to_aiff", False))
+    raw_fmt = result.get("convert_format", result.get("convert_flac_to_aiff", "none"))
+    convert_fmt = normalize_convert_format(raw_fmt)
 
     if not username or not password:
         return None
 
-    write_setup_configs(cfg, username, password, output_dir, convert_aiff)
-    print(f"[Setup] Configurazione salvata! Cartella download: {output_dir}")
+    write_setup_configs(cfg, username, password, output_dir, convert_fmt)
+    fmt_label = {"none": "Nessuna", "aiff": "FLAC -> AIFF (24-bit)", "mp3": "FLAC -> MP3 (320 kbps)"}[convert_fmt]
+    print(f"[Setup] Configurazione salvata! Cartella download: {output_dir} | Conversione: {fmt_label}")
     return load_config(cfg.config_file)

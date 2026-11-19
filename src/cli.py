@@ -14,7 +14,7 @@ SRC_DIR = Path(__file__).resolve().parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import PipelineConfig, load_config, save_convert_preference
+from config import PipelineConfig, load_config, normalize_convert_format, save_convert_preference
 from downloader import download_collection
 from models import CollectionExport
 from setup_ui import ensure_configured
@@ -66,9 +66,9 @@ def _can_use_gui_prompt(cfg: PipelineConfig, no_gui: bool) -> bool:
 def _prompt_with_gui(
     cfg: PipelineConfig,
     url: str | None,
-    default_convert: bool,
-) -> tuple[bool, str, bool] | None:
-    extra_args = ["--default-convert", "true" if default_convert else "false"]
+    default_format: str,
+) -> tuple[bool, str, str] | None:
+    extra_args = ["--default-format", normalize_convert_format(default_format)]
     if url:
         extra_args.extend(["--url", url])
 
@@ -80,13 +80,14 @@ def _prompt_with_gui(
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     raw = (proc.stdout or "").strip()
     if not raw:
-        return None if proc.returncode != 0 else (False, "", default_convert)
+        return None if proc.returncode != 0 else (False, "", default_format)
     try:
         data = json.loads(raw)
+        raw_fmt = data.get("convert_format", data.get("convert_flac_to_aiff", default_format))
         return (
             bool(data.get("confirmed")),
             str(data.get("url") or ""),
-            bool(data.get("convert_flac_to_aiff", default_convert)),
+            normalize_convert_format(raw_fmt),
         )
     except json.JSONDecodeError:
         return None
@@ -107,17 +108,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Forza modalità Full Album o traccia-per-traccia (default: auto)",
     )
     parser.add_argument(
-        "--convert-aiff",
-        dest="convert_aiff",
-        action="store_true",
+        "--convert",
+        dest="convert_format",
+        choices=("none", "aiff", "mp3"),
         default=None,
-        help="Converte i .flac scaricati in .aiff (ed elimina i .flac), lasciando gli .mp3 invariati",
+        help="Formato di conversione per i .flac scaricati: none, aiff (24-bit) o mp3 (320 kbps)",
     )
     parser.add_argument(
+        "--convert-aiff",
+        dest="convert_format",
+        action="store_const",
+        const="aiff",
+        help="Scorciatoia per --convert aiff (FLAC -> AIFF 24-bit, elimina .flac, lascia .mp3 invariati)",
+    )
+    parser.add_argument(
+        "--convert-mp3",
+        dest="convert_format",
+        action="store_const",
+        const="mp3",
+        help="Scorciatoia per --convert mp3 (FLAC -> MP3 320 kbps, elimina .flac, lascia .mp3 invariati)",
+    )
+    parser.add_argument(
+        "--no-convert",
         "--no-convert-aiff",
-        dest="convert_aiff",
-        action="store_false",
-        help="Mantiene i .flac originali senza convertirli in .aiff",
+        dest="convert_format",
+        action="store_const",
+        const="none",
+        help="Mantiene i .flac originali senza convertirli",
     )
     parser.add_argument("--no-gui", action="store_true", help="Disabilita finestre grafiche di input/setup")
     parser.add_argument("--no-finder", action="store_true", help="Non aprire il Finder al termine del download")
@@ -137,30 +154,30 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     raw_input = args.url
-    convert_aiff = cfg.convert_flac_to_aiff if args.convert_aiff is None else bool(args.convert_aiff)
+    convert_format = cfg.convert_format if args.convert_format is None else normalize_convert_format(args.convert_format)
     interactive = False
 
     if not raw_input:
         interactive = True
         gui_res = None
         if _can_use_gui_prompt(cfg, args.no_gui) and not args.export_only:
-            gui_res = _prompt_with_gui(cfg, None, convert_aiff)
+            gui_res = _prompt_with_gui(cfg, None, convert_format)
         if gui_res is not None:
             confirmed, chosen_url, chosen_convert = gui_res
             if not confirmed:
                 print("Operazione annullata.")
                 return 0
             raw_input = chosen_url
-            if args.convert_aiff is None:
-                convert_aiff = chosen_convert
-                save_convert_preference(cfg, convert_aiff)
+            if args.convert_format is None:
+                convert_format = chosen_convert
+                save_convert_preference(cfg, convert_format)
         else:
             try:
                 raw_input = input("Incolla URL Spotify o YouTube (playlist / album / video full album): ").strip()
             except EOFError:
                 return 1
-    elif args.convert_aiff is not None:
-        save_convert_preference(cfg, convert_aiff)
+    elif args.convert_format is not None:
+        save_convert_preference(cfg, convert_format)
 
     try:
         export = extract_collection(raw_input, cfg)
@@ -170,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg,
             export_only=args.export_only,
             force_mode=args.mode,
-            convert_aiff=convert_aiff,
+            convert_format=convert_format,
             open_finder=not args.no_finder,
         )
     except KeyboardInterrupt:

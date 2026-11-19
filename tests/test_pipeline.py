@@ -15,7 +15,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from config import load_config
-from converter import convert_downloaded_flacs_to_aiff
+from converter import convert_downloaded_flacs, convert_downloaded_flacs_to_aiff
 from downloader import download_collection, write_tracks_csv
 from llm_formatter import (
     _parse_llm_json,
@@ -265,7 +265,7 @@ class FirstRunSetupTests(unittest.TestCase):
                 "username": "dj_friend",
                 "password": "secret_password",
                 "output_dir": str(chosen_dir),
-                "convert_flac_to_aiff": True,
+                "convert_format": "mp3",
             }
             with patch("setup_ui._can_use_gui", return_value=True):
                 with patch("setup_ui._run_gui_setup", return_value=fake_gui) as mock_gui:
@@ -274,7 +274,8 @@ class FirstRunSetupTests(unittest.TestCase):
             self.assertIsNotNone(updated)
             mock_gui.assert_called_once()
             self.assertEqual(updated.output_dir, chosen_dir)
-            self.assertTrue(updated.convert_flac_to_aiff)
+            self.assertEqual(updated.convert_format, "mp3")
+            self.assertFalse(updated.convert_flac_to_aiff)
             self.assertTrue(chosen_dir.is_dir())
             self.assertEqual(cfg.sockseek_conf.stat().st_mode & 0o777, 0o600)
             self.assertEqual(cfg.config_file.stat().st_mode & 0o777, 0o600)
@@ -456,6 +457,64 @@ class DownloaderAndConverterTests(unittest.TestCase):
             self.assertTrue(flac_file.with_suffix(".aiff").is_file())
             self.assertTrue(mp3_file.is_file())
             self.assertIn("./01 - Track One.aiff", index_csv.read_text(encoding="utf-8"))
+
+    def test_real_ffmpeg_converts_flac_to_mp3_320_deletes_flac_and_keeps_original_mp3(self) -> None:
+        cfg = load_config()
+        if not Path(cfg.ffmpeg_bin).is_file() or not Path(cfg.ffprobe_bin).is_file():
+            self.skipTest("ffmpeg/ffprobe non disponibili")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "My MP3 Playlist"
+            folder.mkdir(parents=True)
+            flac_file = folder / "01 - Track One.flac"
+            mp3_file = folder / "02 - Already MP3.mp3"
+
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=0.4",
+                    "-metadata", "title=Track One", "-metadata", "artist=Tester",
+                    "-c:a", "flac", str(flac_file),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=880:duration=0.4",
+                    "-c:a", "libmp3lame", "-b:a", "192k", str(mp3_file),
+                ],
+                check=True,
+            )
+            orig_mp3_bytes = mp3_file.read_bytes()
+            index_csv = folder / "_index.csv"
+            index_csv.write_text(
+                "filepath,artist,album,title\n./01 - Track One.flac,Tester,,Track One\n./02 - Already MP3.mp3,Tester,,Already MP3\n",
+                encoding="utf-8",
+            )
+
+            converted, failed = convert_downloaded_flacs(
+                [flac_file, mp3_file],
+                target_format="mp3",
+                ffmpeg_bin=cfg.ffmpeg_bin,
+                ffprobe_bin=cfg.ffprobe_bin,
+            )
+            out_mp3 = flac_file.with_suffix(".mp3")
+            self.assertEqual((converted, failed), (1, 0))
+            self.assertFalse(flac_file.exists())
+            self.assertTrue(out_mp3.is_file())
+            self.assertEqual(mp3_file.read_bytes(), orig_mp3_bytes)
+            self.assertIn("./01 - Track One.mp3", index_csv.read_text(encoding="utf-8"))
+
+            probe = subprocess.run(
+                [cfg.ffprobe_bin, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,bit_rate", "-of", "csv=p=0", str(out_mp3)],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            codec, bitrate = probe.stdout.strip().split(",")
+            self.assertEqual(codec, "mp3")
+            self.assertEqual(int(bitrate), 320000)
 
 
 if __name__ == "__main__":

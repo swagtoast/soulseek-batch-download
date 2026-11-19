@@ -1,4 +1,4 @@
-"""Safe post-download FLAC -> AIFF converter preserving metadata, cover art, and MP3 files."""
+"""Safe post-download FLAC -> AIFF (24-bit) / MP3 (320 kbps) converter preserving metadata, cover art, and MP3 files."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def _probe_cover_codec(ffprobe_bin: str, source: Path) -> str | None:
     return None
 
 
-def _verify_aiff(ffprobe_bin: str, target: Path) -> bool:
+def _verify_converted(ffprobe_bin: str, target: Path, target_format: str) -> bool:
     if not target.is_file() or target.stat().st_size <= 0:
         return False
     proc = subprocess.run(
@@ -65,19 +65,26 @@ def _verify_aiff(ffprobe_bin: str, target: Path) -> bool:
     except json.JSONDecodeError:
         return False
     streams = info.get("streams") or []
-    return any(
-        s.get("codec_type") == "audio" and str(s.get("codec_name") or "").startswith("pcm_")
-        for s in streams
-    )
+    if target_format == "aiff":
+        return any(
+            s.get("codec_type") == "audio" and str(s.get("codec_name") or "").startswith("pcm_")
+            for s in streams
+        )
+    if target_format == "mp3":
+        return any(
+            s.get("codec_type") == "audio" and str(s.get("codec_name") or "") == "mp3"
+            for s in streams
+        )
+    return False
 
 
-def _unique_aiff_path(flac_path: Path) -> Path:
-    candidate = flac_path.with_suffix(".aiff")
+def _unique_target_path(flac_path: Path, suffix: str) -> Path:
+    candidate = flac_path.with_suffix(suffix)
     if not candidate.exists():
         return candidate
     idx = 1
     while True:
-        alt = flac_path.with_name(f"{flac_path.stem} ({idx}).aiff")
+        alt = flac_path.with_name(f"{flac_path.stem} ({idx}){suffix}")
         if not alt.exists():
             return alt
         idx += 1
@@ -87,6 +94,7 @@ def _build_ffmpeg_args(
     ffmpeg_bin: str,
     src: Path,
     temp_out: Path,
+    target_format: str,
     cover_codec: str | None,
 ) -> list[str]:
     args = [
@@ -103,34 +111,53 @@ def _build_ffmpeg_args(
     ]
     if cover_codec:
         args.extend(["-map", "0:v:0"])
-        if cover_codec in {"png", "mjpeg"}:
-            args.extend(["-c:v", "copy"])
+        if target_format == "mp3":
+            args.extend(["-c:v", "copy" if cover_codec in {"png", "mjpeg"} else "mjpeg"])
         else:
-            args.extend(["-c:v", "png"])
+            args.extend(["-c:v", "copy" if cover_codec in {"png", "mjpeg"} else "png"])
         args.extend(["-disposition:v:0", "attached_pic"])
     else:
         args.append("-vn")
 
-    args.extend(
-        [
-            "-map_metadata",
-            "0",
-            "-c:a",
-            "pcm_s24be",
-            "-write_id3v2",
-            "1",
-            "-id3v2_version",
-            "3",
-            "-f",
-            "aiff",
-            str(temp_out),
-        ]
-    )
+    if target_format == "mp3":
+        args.extend(
+            [
+                "-map_metadata",
+                "0",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                "320k",
+                "-id3v2_version",
+                "3",
+                "-write_id3v1",
+                "1",
+                "-f",
+                "mp3",
+                str(temp_out),
+            ]
+        )
+    else:
+        args.extend(
+            [
+                "-map_metadata",
+                "0",
+                "-c:a",
+                "pcm_s24be",
+                "-write_id3v2",
+                "1",
+                "-id3v2_version",
+                "3",
+                "-f",
+                "aiff",
+                str(temp_out),
+            ]
+        )
     return args
 
 
 def _update_index_csv(replacements: dict[Path, Path]) -> None:
-    """Update nearby Sockseek _index.csv files so converted .flac entries point to .aiff."""
+    """Update nearby Sockseek _index.csv files so converted .flac entries point to the converted files."""
     if not replacements:
         return
     dirs_seen: set[Path] = set()
@@ -176,68 +203,92 @@ def _update_index_csv(replacements: dict[Path, Path]) -> None:
                 tmp_index.unlink(missing_ok=True)
 
 
-def convert_downloaded_flacs_to_aiff(
+def convert_downloaded_flacs(
     downloaded_audio: list[Path],
+    target_format: str,
     ffmpeg_bin: str,
     ffprobe_bin: str,
 ) -> tuple[int, int]:
-    """Convert downloaded .flac files to 24-bit AIFF and delete original .flac files; leave .mp3 untouched.
+    """Convert downloaded .flac files to 'aiff' (24-bit PCM) or 'mp3' (320 kbps) and delete original .flac files.
 
+    Already-downloaded .mp3 files are always left untouched.
     Returns (converted_count, failed_count).
     """
+    fmt = (target_format or "none").strip().lower()
+    if fmt not in {"aiff", "mp3"}:
+        return (0, 0)
+
+    suffix = ".mp3" if fmt == "mp3" else ".aiff"
+    tag = "MP3 320" if fmt == "mp3" else "AIFF"
+    desc = "MP3 (320 kbps CBR)" if fmt == "mp3" else "AIFF (PCM 24-bit, massima qualità)"
+
     flacs = [p for p in downloaded_audio if p.is_file() and p.suffix.lower() == ".flac"]
     if not flacs:
         mp3_count = sum(1 for p in downloaded_audio if p.suffix.lower() == ".mp3")
         if mp3_count:
-            print(f"[AIFF] Nessun file .flac da convertire ({mp3_count} file .mp3 mantenuti invariati).")
+            print(f"[{tag}] Nessun file .flac da convertire ({mp3_count} file .mp3 mantenuti invariati).")
         return (0, 0)
 
-    print(f"\n[AIFF] Conversione di {len(flacs)} file .flac in AIFF (PCM 24-bit, massima qualità)...")
+    print(f"\n[{tag}] Conversione di {len(flacs)} file .flac in {desc}...")
     converted = 0
     failed = 0
     replacements: dict[Path, Path] = {}
 
     for idx, flac_path in enumerate(flacs, start=1):
-        temp_aiff = flac_path.with_name(f".{flac_path.stem}.converting-{uuid.uuid4().hex[:8]}.aiff")
+        temp_out = flac_path.with_name(f".{flac_path.stem}.converting-{uuid.uuid4().hex[:8]}{suffix}")
         cover_codec = _probe_cover_codec(ffprobe_bin, flac_path)
 
         try:
             proc = subprocess.run(
-                _build_ffmpeg_args(ffmpeg_bin, flac_path, temp_aiff, cover_codec),
+                _build_ffmpeg_args(ffmpeg_bin, flac_path, temp_out, fmt, cover_codec),
                 capture_output=True,
                 text=True,
                 check=False,
             )
             if proc.returncode != 0 and cover_codec is not None:
-                temp_aiff.unlink(missing_ok=True)
+                temp_out.unlink(missing_ok=True)
                 proc = subprocess.run(
-                    _build_ffmpeg_args(ffmpeg_bin, flac_path, temp_aiff, None),
+                    _build_ffmpeg_args(ffmpeg_bin, flac_path, temp_out, fmt, None),
                     capture_output=True,
                     text=True,
                     check=False,
                 )
 
-            if proc.returncode != 0 or not _verify_aiff(ffprobe_bin, temp_aiff):
+            if proc.returncode != 0 or not _verify_converted(ffprobe_bin, temp_out, fmt):
                 err = (proc.stderr or "").strip() or "verifica ffprobe fallita"
                 print(f"  [{idx}/{len(flacs)}] ERRORE {flac_path.name}: {err} (FLAC originale mantenuto)")
                 failed += 1
                 continue
 
-            final_aiff = _unique_aiff_path(flac_path)
-            shutil.move(str(temp_aiff), str(final_aiff))
+            final_out = _unique_target_path(flac_path, suffix)
+            shutil.move(str(temp_out), str(final_out))
             flac_path.unlink()
-            replacements[flac_path] = final_aiff
+            replacements[flac_path] = final_out
             converted += 1
-            print(f"  [{idx}/{len(flacs)}] {flac_path.name} -> {final_aiff.name}")
+            print(f"  [{idx}/{len(flacs)}] {flac_path.name} -> {final_out.name}")
         except Exception as exc:
             print(f"  [{idx}/{len(flacs)}] ERRORE {flac_path.name}: {exc} (FLAC originale mantenuto)")
             failed += 1
         finally:
-            temp_aiff.unlink(missing_ok=True)
+            temp_out.unlink(missing_ok=True)
 
     _update_index_csv(replacements)
     mp3_count = sum(1 for p in downloaded_audio if p.suffix.lower() == ".mp3")
     if mp3_count:
-        print(f"[AIFF] Mantenuti invariati {mp3_count} file .mp3.")
-    print(f"[AIFF] Completato: {converted} convertiti in AIFF, {failed} errori.")
+        print(f"[{tag}] Mantenuti invariati {mp3_count} file .mp3 originali.")
+    print(f"[{tag}] Completato: {converted} convertiti in {tag}, {failed} errori.")
     return (converted, failed)
+
+
+def convert_downloaded_flacs_to_aiff(
+    downloaded_audio: list[Path],
+    ffmpeg_bin: str,
+    ffprobe_bin: str,
+) -> tuple[int, int]:
+    """Backwards-compatible wrapper converting downloaded .flac files to 24-bit AIFF."""
+    return convert_downloaded_flacs(
+        downloaded_audio=downloaded_audio,
+        target_format="aiff",
+        ffmpeg_bin=ffmpeg_bin,
+        ffprobe_bin=ffprobe_bin,
+    )

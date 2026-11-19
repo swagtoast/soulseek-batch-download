@@ -9,8 +9,8 @@ import shutil
 import subprocess
 import sys
 
-from config import PipelineConfig
-from converter import convert_downloaded_flacs_to_aiff
+from config import PipelineConfig, normalize_convert_format
+from converter import convert_downloaded_flacs
 from models import CollectionExport
 
 
@@ -96,16 +96,18 @@ def _platform_extra_args(export: CollectionExport) -> list[str]:
 
 def _maybe_convert(
     cfg: PipelineConfig,
-    convert_aiff: bool,
+    convert_format: str,
     before_files: dict[Path, float],
 ) -> None:
-    if not convert_aiff:
+    fmt = normalize_convert_format(convert_format)
+    if fmt == "none":
         return
     new_audio = _new_audio_files(before_files, cfg.output_dir)
     if not new_audio:
         return
-    convert_downloaded_flacs_to_aiff(
+    convert_downloaded_flacs(
         downloaded_audio=new_audio,
+        target_format=fmt,
         ffmpeg_bin=cfg.ffmpeg_bin,
         ffprobe_bin=cfg.ffprobe_bin,
     )
@@ -254,10 +256,11 @@ def download_collection(
     cfg: PipelineConfig,
     export_only: bool = False,
     force_mode: str = "auto",
-    convert_aiff: bool = False,
+    convert_format: str | None = None,
+    convert_aiff: bool | None = None,
     open_finder: bool = True,
 ) -> int:
-    """Export tracklist CSV, run Sockseek natively without Docker, convert FLAC->AIFF if requested, and open Finder."""
+    """Export tracklist CSV, run Sockseek natively without Docker, convert FLAC if requested, and open Finder."""
     if not cfg.sockseek_bin.is_file() and not export_only:
         raise FileNotFoundError(f"Binario sockseek non trovato: {cfg.sockseek_bin}")
     if not cfg.sockseek_conf.is_file() and not export_only:
@@ -280,6 +283,12 @@ def download_collection(
     elif force_mode == "album" and export.kind == "playlist":
         effective_kind = "album"
 
+    effective_convert = (
+        normalize_convert_format(convert_format)
+        if convert_format is not None
+        else (normalize_convert_format(convert_aiff) if convert_aiff is not None else "none")
+    )
+
     session_before_files = _snapshot_files(cfg.output_dir)
     rc, preferred_dir = _execute_download(
         export=export,
@@ -288,7 +297,7 @@ def download_collection(
         cfg=cfg,
         session_before_files=session_before_files,
     )
-    _maybe_convert(cfg, convert_aiff, session_before_files)
+    _maybe_convert(cfg, effective_convert, session_before_files)
     if open_finder:
         _reveal_after_download(cfg, session_before_files, preferred_dir)
     return rc
