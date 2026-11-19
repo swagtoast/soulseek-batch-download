@@ -12,7 +12,7 @@ Platform = Literal["spotify", "youtube"]
 
 @dataclass
 class Track:
-    """Normalized track metadata ready for CSV export or Soulseek search."""
+    """Normalized track metadata ready for CSV export, Soulseek search, and post-download tagging."""
 
     artist: str
     title: str
@@ -20,6 +20,12 @@ class Track:
     duration_sec: int | None = None
     raw_title: str = ""
     uploader: str = ""
+    album_artist: str = ""
+    track_number: int | None = None
+    total_tracks: int | None = None
+    disc_number: int | None = None
+    release_year: str = ""
+    cover_url: str = ""
 
 
 @dataclass
@@ -35,3 +41,4 @@ class CollectionExport:
     source_url: str = ""
     source_platform: Platform = "spotify"
     used_llm: bool = False
+    cover_url: str = ""

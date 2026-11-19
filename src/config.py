@@ -131,6 +131,7 @@ class PipelineConfig:
     mlx_python: str
     mlx_base_model: str
     mlx_adapter_dir: Path
+    mlx_tagger_adapter_dir: Path
     yt_dlp_bin: str
     deno_bin: str
     ffmpeg_bin: str
@@ -222,6 +223,11 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         or raw.get("mlx_adapter_dir")
         or (PROJECT_ROOT / "models" / "minicpm5_slsk_lora")
     ).expanduser()
+    mlx_tagger_adapter_dir = Path(
+        os.environ.get("SLSK_MLX_TAGGER_ADAPTER")
+        or raw.get("mlx_tagger_adapter_dir")
+        or (PROJECT_ROOT / "models" / "minicpm5_tagger_lora")
+    ).expanduser()
 
     yt_dlp_bin = _resolve_binary(
         str(raw.get("yt_dlp_path", "")),
@@ -263,6 +269,7 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         mlx_python=mlx_python,
         mlx_base_model=mlx_base_model,
         mlx_adapter_dir=mlx_adapter_dir,
+        mlx_tagger_adapter_dir=mlx_tagger_adapter_dir,
         yt_dlp_bin=yt_dlp_bin,
         deno_bin=deno_bin,
         ffmpeg_bin=ffmpeg_bin,

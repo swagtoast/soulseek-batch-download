@@ -296,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-gui", action="store_true", help="Disabilita finestre grafiche di input/setup")
     parser.add_argument("--no-finder", action="store_true", help="Non aprire il Finder al termine del download")
+    parser.add_argument("--no-tag", action="store_true", help="Salta verifica e correzione automatica dei metadati/copertine")
     parser.add_argument("--update", action="store_true", help="Controlla e installa subito eventuali aggiornamenti da GitHub")
     parser.add_argument("--no-update", action="store_true", help="Salta il controllo automatico aggiornamenti")
     parser.add_argument("--pause", action="store_true", help="Attendi Invio alla fine (utile da .command)")
@@ -388,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
             convert_format=convert_format,
             delete_original=True,
             open_finder=not args.no_finder,
+            auto_tag=not args.no_tag,
         )
     except KeyboardInterrupt:
         print("\nInterrotto dall'utente.")

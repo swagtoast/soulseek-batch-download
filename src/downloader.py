@@ -15,9 +15,12 @@ import unicodedata
 from config import PipelineConfig, normalize_convert_format
 from converter import convert_downloaded_flacs
 from models import CollectionExport, Track
+from tagger import tag_downloaded_files
 
 
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".aiff", ".aif", ".wav", ".m4a", ".ogg", ".opus", ".alac"}
+MISSING_TRACKS_REPORT_NAME = "BRANI_MANCANTI.txt"
+PROTECTED_REPORT_NAMES = {MISSING_TRACKS_REPORT_NAME.lower()}
 
 
 def write_tracks_csv(export: CollectionExport, csv_path: Path, include_length: bool | None = None) -> Path:
@@ -134,6 +137,33 @@ def _rescue_missing_tracks(
         return _run_sockseek(cmd)
 
 
+def _write_missing_tracks_report(
+    target_dir: Path,
+    export: CollectionExport,
+    missing_tracks: list[Track],
+    downloaded_count: int,
+    expected_count: int,
+) -> Path:
+    """Write a readable BRANI_MANCANTI.txt report inside target_dir (intentional exception to audio-only cleanup)."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    report_path = target_dir / MISSING_TRACKS_REPORT_NAME
+    lines = [
+        "Soulseek Batch Download — Brani non trovati su Soulseek",
+        f"Collezione: {export.name}",
+        f"Scaricati: {downloaded_count}/{expected_count} (mancanti: {len(missing_tracks)})",
+        "",
+    ]
+    for idx, tr in enumerate(missing_tracks, start=1):
+        base = f"{tr.artist} - {tr.title}" if tr.artist else tr.title
+        if tr.album and tr.album.lower() not in base.lower():
+            base = f"{base} [{tr.album}]"
+        lines.append(f"{idx:02d}. {base}")
+    lines.append("")
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[Controllo tracce] Elenco brani mancanti salvato in: {report_path}")
+    return report_path
+
+
 def _verify_and_rescue_tracks(
     export: CollectionExport,
     target_dir: Path,
@@ -147,9 +177,15 @@ def _verify_and_rescue_tracks(
     if expected_count <= 0:
         return
 
+    report_path = target_dir / MISSING_TRACKS_REPORT_NAME
     current_audio = _new_audio_files(session_before_files, cfg.output_dir)
     if len(current_audio) >= expected_count:
         print(f"[Controllo tracce] Completo: {len(current_audio)}/{expected_count} tracce scaricate.")
+        if report_path.is_file():
+            try:
+                report_path.unlink()
+            except OSError:
+                pass
         return
 
     if not expected_tracks:
@@ -168,11 +204,23 @@ def _verify_and_rescue_tracks(
     still_missing = find_missing_tracks(expected_tracks, after_audio)
     if not still_missing or len(after_audio) >= expected_count:
         print(f"[Controllo tracce] Tutte le {len(after_audio)}/{expected_count} tracce scaricate!")
+        if report_path.is_file():
+            try:
+                report_path.unlink()
+            except OSError:
+                pass
     else:
         missed_list = "; ".join(f"{t.artist} - {t.title}" if t.artist else t.title for t in still_missing)
         print(
             f"[Controllo tracce] Scaricate {len(after_audio)}/{expected_count} tracce. "
             f"Non trovate su Soulseek ({len(still_missing)}): {missed_list}"
+        )
+        _write_missing_tracks_report(
+            target_dir=target_dir,
+            export=export,
+            missing_tracks=still_missing,
+            downloaded_count=len(after_audio),
+            expected_count=expected_count,
         )
 
 
@@ -210,6 +258,8 @@ def _cleanup_non_audio_files(before_files: dict[Path, float], before_dirs: set[P
         if not path.is_file():
             continue
         if path in before_files:
+            continue
+        if path.name.lower() in PROTECTED_REPORT_NAMES:
             continue
         if path.suffix.lower() not in AUDIO_EXTENSIONS:
             try:
@@ -467,8 +517,9 @@ def download_collection(
     convert_aiff: bool | None = None,
     delete_original: bool = True,
     open_finder: bool = True,
+    auto_tag: bool = True,
 ) -> int:
-    """Export tracklist CSV, run Sockseek natively without Docker, convert FLAC if requested, and open Finder."""
+    """Export tracklist CSV, run Sockseek natively without Docker, convert FLAC if requested, tag audio, and open Finder."""
     if not cfg.sockseek_bin.is_file() and not export_only:
         raise FileNotFoundError(f"Binario sockseek non trovato: {cfg.sockseek_bin}")
     if not cfg.sockseek_conf.is_file() and not export_only:
@@ -509,6 +560,13 @@ def download_collection(
     )
     _cleanup_non_audio_files(session_before_files, session_before_dirs, cfg.output_dir)
     _maybe_convert(cfg, effective_convert, session_before_files)
+    if auto_tag:
+        post_audio = _new_audio_files(session_before_files, cfg.output_dir)
+        if post_audio:
+            try:
+                tag_downloaded_files(post_audio, export, cfg)
+            except Exception as exc:
+                print(f"[Tagger] Avviso: tagging saltato ({exc})")
     if open_finder:
         _reveal_after_download(cfg, session_before_files, preferred_dir)
     return rc

@@ -33,6 +33,14 @@ from llm_formatter import (
 )
 from models import CollectionExport, Track
 from setup_ui import ensure_configured, is_first_run_needed, write_setup_configs
+from tagger import (
+    TagDecision,
+    _choose_candidate_deterministic,
+    _enforce_album_cohesion,
+    probe_audio_tags,
+    tag_downloaded_files,
+    tags_need_repair,
+)
 from updater import apply_update_from_tarball, check_and_apply_update
 from url_utils import classify_url, extract_url_from_text, sanitize_filename
 from youtube_extractor import extract_youtube
@@ -498,7 +506,7 @@ class DownloaderAndConverterTests(unittest.TestCase):
 
             with patch("downloader._run_sockseek", side_effect=fake_run):
                 with patch("downloader._open_in_finder") as mock_finder:
-                    rc = download_collection(export, cfg, open_finder=False)
+                    rc = download_collection(export, cfg, open_finder=False, auto_tag=False)
 
             self.assertEqual(rc, 0)
             self.assertEqual(len(calls), 2)
@@ -550,7 +558,7 @@ class DownloaderAndConverterTests(unittest.TestCase):
 
             with patch("downloader._run_sockseek", side_effect=fake_alb_run):
                 with patch("downloader._open_in_finder"):
-                    rc_alb = download_collection(alb, cfg, open_finder=False)
+                    rc_alb = download_collection(alb, cfg, open_finder=False, auto_tag=False)
 
             self.assertEqual(rc_alb, 0)
             self.assertEqual(len(alb_calls), 2)
@@ -589,7 +597,7 @@ class DownloaderAndConverterTests(unittest.TestCase):
 
             with patch("downloader._run_sockseek", side_effect=fake_pl_run):
                 with patch("downloader._open_in_finder"):
-                    rc_pl = download_collection(pl, cfg, convert_format="mp3", open_finder=False)
+                    rc_pl = download_collection(pl, cfg, convert_format="mp3", open_finder=False, auto_tag=False)
 
             self.assertEqual(rc_pl, 0)
             self.assertEqual(len(pl_calls), 2)
@@ -597,6 +605,60 @@ class DownloaderAndConverterTests(unittest.TestCase):
             self.assertIn("Last Song", pl_rescue_csv_contents[0])
             self.assertNotIn("First Song", pl_rescue_csv_contents[0])
             self.assertTrue((cfg.output_dir / "Friend Playlist" / "03 - Last Song.mp3").is_file())
+            self.assertFalse((cfg.output_dir / "Friend Playlist" / "BRANI_MANCANTI.txt").exists())
+
+    def test_missing_tracks_report_created_and_preserved_by_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config()
+            cfg.output_dir = root / "downloads"
+            cfg.lists_dir = root / "lists"
+            cfg.sockseek_bin = root / "sockseek"
+            cfg.sockseek_conf = root / "sockseek.conf"
+            cfg.sockseek_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+            cfg.sockseek_conf.write_text("username=x\n", encoding="utf-8")
+
+            pl = CollectionExport(
+                kind="playlist",
+                name="Rare Vinyl Playlist",
+                total_tracks=3,
+                source_platform="spotify",
+                tracks=[
+                    Track(artist="Artist A", title="Found Track", album="Alb A", duration_sec=200),
+                    Track(artist="Artist B", title="Missing Rare Gem", album="Rare EP", duration_sec=210),
+                    Track(artist="Artist C", title="Also Missing Track", duration_sec=220),
+                ],
+            )
+            pl_dir = cfg.output_dir / "Rare Vinyl Playlist"
+            calls = 0
+
+            def fake_run(cmd: list[str]) -> int:
+                nonlocal calls
+                calls += 1
+                pl_dir.mkdir(parents=True, exist_ok=True)
+                if calls == 1:
+                    (pl_dir / "01 - Found Track.mp3").write_bytes(b"AUDIO")
+                    (pl_dir / "cover.jpg").write_bytes(b"JUNK")
+                    (pl_dir / "info.nfo").write_text("junk", encoding="utf-8")
+                return 0  # Rescue pass also finds nothing
+
+            with patch("downloader._run_sockseek", side_effect=fake_run):
+                with patch("downloader._open_in_finder"):
+                    rc = download_collection(pl, cfg, convert_format="mp3", open_finder=False, auto_tag=False)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(calls, 2)
+            # Non-audio junk MUST still be deleted...
+            self.assertFalse((pl_dir / "cover.jpg").exists())
+            self.assertFalse((pl_dir / "info.nfo").exists())
+            # ...while BRANI_MANCANTI.txt MUST be created and survive cleanup!
+            report = pl_dir / "BRANI_MANCANTI.txt"
+            self.assertTrue(report.is_file())
+            text = report.read_text(encoding="utf-8")
+            self.assertIn("Scaricati: 1/3 (mancanti: 2)", text)
+            self.assertIn("01. Artist B - Missing Rare Gem [Rare EP]", text)
+            self.assertIn("02. Artist C - Also Missing Track", text)
+            self.assertNotIn("Found Track", text)
 
     def test_download_opens_finder_after_flac_to_aiff_conversion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -631,12 +693,15 @@ class DownloaderAndConverterTests(unittest.TestCase):
                 return 0
 
             with patch("downloader._run_sockseek", side_effect=fake_run):
-                with patch("downloader._open_in_finder") as mock_finder:
-                    rc = download_collection(export, cfg, convert_aiff=True, open_finder=True)
+                with patch("downloader.tag_downloaded_files", return_value=(1, 0, 0)) as mock_tag:
+                    with patch("downloader._open_in_finder") as mock_finder:
+                        rc = download_collection(export, cfg, convert_aiff=True, open_finder=True)
 
             self.assertEqual(rc, 0)
             self.assertTrue((playlist_dir / "01 - Song One.aiff").is_file())
             self.assertFalse((playlist_dir / "01 - Song One.flac").exists())
+            mock_tag.assert_called_once()
+            self.assertEqual(mock_tag.call_args[0][0], [playlist_dir / "01 - Song One.aiff"])
             mock_finder.assert_called_once_with(playlist_dir, reveal=False)
 
     def test_real_ffmpeg_converts_flac_to_aiff_deletes_flac_and_keeps_mp3(self) -> None:
@@ -822,7 +887,7 @@ class DownloaderAndConverterTests(unittest.TestCase):
 
             with patch("downloader._run_sockseek", side_effect=fake_run):
                 with patch("downloader._open_in_finder"):
-                    rc = download_collection(export, cfg, convert_format="mp3", open_finder=True)
+                    rc = download_collection(export, cfg, convert_format="mp3", open_finder=True, auto_tag=False)
 
             self.assertEqual(rc, 0)
             self.assertEqual(len(seen_cmds), 1)
@@ -906,6 +971,299 @@ class AutoUpdaterTests(unittest.TestCase):
                 self.assertFalse(check_and_apply_update(cfg, force=False))
                 mock_fetch.assert_called_once()
                 self.assertEqual(mock_fetch.call_args.kwargs.get("etag"), 'W/"abc"')
+
+
+class AutoTaggerTests(unittest.TestCase):
+    def test_deterministic_candidate_prefers_studio_album_over_compilations(self) -> None:
+        cands = [
+            {
+                "src": "itunes",
+                "artist": "Daft Punk",
+                "album_artist": "Various Artists",
+                "album": "Now That's What I Call Classic Hits Vol. 42",
+                "title": "Digital Love",
+                "track_number": 19,
+                "total_tracks": 40,
+                "disc_number": 1,
+                "date": "2019",
+                "duration_sec": 301,
+                "cover_url": "https://example.com/comp.jpg",
+            },
+            {
+                "src": "musicbrainz",
+                "artist": "Daft Punk",
+                "album_artist": "Daft Punk",
+                "album": "Best Of Daft Punk",
+                "title": "Digital Love",
+                "track_number": 5,
+                "total_tracks": 18,
+                "disc_number": 1,
+                "date": "2020",
+                "duration_sec": 300,
+                "cover_url": "https://example.com/bestof.jpg",
+            },
+            {
+                "src": "itunes",
+                "artist": "Daft Punk",
+                "album_artist": "Daft Punk",
+                "album": "Discovery",
+                "title": "Digital Love",
+                "track_number": 3,
+                "total_tracks": 14,
+                "disc_number": 1,
+                "date": "2001",
+                "duration_sec": 301,
+                "cover_url": "https://example.com/discovery.jpg",
+            },
+        ]
+        chosen = _choose_candidate_deterministic(cands, "Daft Punk", "Digital Love", "", 301, "playlist")
+        self.assertEqual(chosen, 2)
+
+    def test_album_cohesion_unifies_album_artist_and_total_tracks(self) -> None:
+        export = CollectionExport(
+            kind="album",
+            name="Daft Punk - Discovery",
+            artist="Daft Punk",
+            album="Discovery",
+            total_tracks=14,
+            cover_url="https://example.com/discovery.jpg",
+        )
+        decisions = [
+            TagDecision(
+                artist="Daft Punk",
+                album_artist="Daft Punk",
+                album="Discovery",
+                title="One More Time",
+                track_number=1,
+                total_tracks=14,
+                disc_number=1,
+                date="2001",
+                cover_url="https://example.com/discovery.jpg",
+            ),
+            TagDecision(
+                artist="Daft Punk feat. Romanthony",
+                album_artist="Daft Punk feat. Romanthony",
+                album="",
+                title="Too Long",
+                track_number=14,
+                total_tracks=None,
+                disc_number=1,
+                date="",
+                cover_url="",
+            ),
+        ]
+        _enforce_album_cohesion(decisions, export)
+        self.assertEqual(decisions[1].album_artist, "Daft Punk")
+        self.assertEqual(decisions[1].album, "Discovery")
+        self.assertEqual(decisions[1].total_tracks, 14)
+        self.assertEqual(decisions[1].cover_url, "https://example.com/discovery.jpg")
+        self.assertEqual(decisions[1].date, "2001")
+
+    def test_real_cross_format_lossless_tagging_and_cover_art_flac_aiff_mp3_m4a(self) -> None:
+        cfg = load_config()
+        if not Path(cfg.ffmpeg_bin).is_file() or not Path(cfg.ffprobe_bin).is_file():
+            self.skipTest("ffmpeg/ffprobe non disponibili")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Generate a real PNG cover image
+            cover_png = root / "cover.png"
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=0x1e88e5:s=64x64:d=0.1",
+                    "-frames:v", "1", str(cover_png),
+                ],
+                check=True,
+            )
+            cover_bytes = cover_png.read_bytes()
+
+            # Generate dirty/untagged real audio files across all 4 formats
+            specs = [
+                (root / "03 - Digital Love.flac", ["-c:a", "flac"]),
+                (root / "03 - Digital Love.aiff", ["-c:a", "pcm_s24be"]),
+                (root / "03 - Digital Love.mp3", ["-c:a", "libmp3lame", "-b:a", "192k"]),
+                (root / "03 - Digital Love.m4a", ["-c:a", "aac", "-b:a", "192k"]),
+            ]
+            audio_paths: list[Path] = []
+            for p, codec_args in specs:
+                subprocess.run(
+                    [
+                        cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                        *codec_args,
+                        "-metadata", "title=03. Digital Love [FLAC]",
+                        str(p),
+                    ],
+                    check=True,
+                )
+                audio_paths.append(p)
+
+            export = CollectionExport(
+                kind="playlist",
+                name="Mixed Test",
+                source_platform="spotify",
+                tracks=[
+                    Track(
+                        artist="Daft Punk",
+                        title="Digital Love",
+                        album="Discovery",
+                        album_artist="Daft Punk",
+                        track_number=3,
+                        total_tracks=14,
+                        disc_number=1,
+                        release_year="2001",
+                        cover_url="https://example.com/discovery.png",
+                    )
+                    for _ in audio_paths
+                ],
+            )
+
+            with patch("tagger._try_mlx_tagger_batch", return_value=None):
+                with patch("tagger.download_cover_art", return_value=cover_bytes):
+                    updated, already_ok, failed = tag_downloaded_files(audio_paths, export, cfg, allow_network=True)
+
+            self.assertEqual((updated, already_ok, failed), (4, 0, 0))
+
+            for p in audio_paths:
+                probed = probe_audio_tags(cfg.ffprobe_bin, p)
+                self.assertEqual(probed.artist, "Daft Punk", f"artist mismatch on {p.suffix}")
+                self.assertEqual(probed.album_artist, "Daft Punk", f"album_artist mismatch on {p.suffix}")
+                self.assertEqual(probed.album, "Discovery", f"album mismatch on {p.suffix}")
+                self.assertEqual(probed.title, "Digital Love", f"title mismatch on {p.suffix}")
+                self.assertEqual(probed.track_number, 3, f"track_number mismatch on {p.suffix}")
+                self.assertEqual(probed.total_tracks, 14, f"total_tracks mismatch on {p.suffix}")
+                self.assertEqual(probed.disc_number, 1, f"disc_number mismatch on {p.suffix}")
+                self.assertEqual(probed.date, "2001", f"date mismatch on {p.suffix}")
+                self.assertTrue(probed.has_cover, f"cover missing on {p.suffix}")
+                self.assertFalse(tags_need_repair(probed), f"tags_need_repair should be False on {p.suffix}")
+
+            # Second pass must skip every already-complete file without rewriting!
+            with patch("tagger.write_audio_tags_lossless") as mock_write:
+                u2, ok2, f2 = tag_downloaded_files(audio_paths, export, cfg, allow_network=False)
+            self.assertEqual((u2, ok2, f2), (0, 4, 0))
+            mock_write.assert_not_called()
+
+    def test_mixed_playlist_option_a_with_mlx_tagger_lora_tags_each_track_with_real_original_album(self) -> None:
+        cfg = load_config()
+        if not Path(cfg.ffmpeg_bin).is_file() or not Path(cfg.ffprobe_bin).is_file():
+            self.skipTest("ffmpeg/ffprobe non disponibili")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cover_png = root / "cover.png"
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=0x43a047:s=64x64:d=0.1",
+                    "-frames:v", "1", str(cover_png),
+                ],
+                check=True,
+            )
+            cover_bytes = cover_png.read_bytes()
+
+            f1 = root / "01 - Track A.mp3"
+            f2 = root / "02 - Track B.mp3"
+            for f in (f1, f2):
+                subprocess.run(
+                    [
+                        cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                        "-c:a", "libmp3lame", "-b:a", "192k", str(f),
+                    ],
+                    check=True,
+                )
+
+            export = CollectionExport(
+                kind="playlist",
+                name="My Mixed Vibes",
+                source_platform="youtube",
+                tracks=[
+                    Track(artist="Air", title="Track A"),
+                    Track(artist="Aphex Twin", title="Track B"),
+                ],
+            )
+            fake_itunes = {
+                "track a": [
+                    {
+                        "src": "itunes",
+                        "artist": "Air",
+                        "album_artist": "Air",
+                        "album": "Moon Safari",
+                        "title": "La Femme d'Argent",
+                        "track_number": 1,
+                        "total_tracks": 10,
+                        "disc_number": 1,
+                        "date": "1998",
+                        "duration_sec": 430,
+                        "cover_url": "https://example.com/moon.png",
+                    }
+                ],
+                "track b": [
+                    {
+                        "src": "itunes",
+                        "artist": "Aphex Twin",
+                        "album_artist": "Aphex Twin",
+                        "album": "Selected Ambient Works 85-92",
+                        "title": "Xtal",
+                        "track_number": 1,
+                        "total_tracks": 13,
+                        "disc_number": 1,
+                        "date": "1992",
+                        "duration_sec": 294,
+                        "cover_url": "https://example.com/saw.png",
+                    }
+                ],
+            }
+            fake_mlx_response = [
+                {
+                    "tracks": [
+                        {
+                            "idx": 0,
+                            "candidate_idx": 0,
+                            "artist": "Air",
+                            "album_artist": "Air",
+                            "album": "Moon Safari",
+                            "title": "La Femme d'Argent",
+                            "track_number": 1,
+                            "total_tracks": 10,
+                            "disc_number": 1,
+                            "date": "1998",
+                        },
+                        {
+                            "idx": 1,
+                            "candidate_idx": 0,
+                            "artist": "Aphex Twin",
+                            "album_artist": "Aphex Twin",
+                            "album": "Selected Ambient Works 85-92",
+                            "title": "Xtal",
+                            "track_number": 1,
+                            "total_tracks": 13,
+                            "disc_number": 1,
+                            "date": "1992",
+                        },
+                    ]
+                }
+            ]
+
+            def fake_search(artist: str, title: str, album: str = "", limit: int = 5) -> list[dict]:
+                return fake_itunes.get(title.lower(), [])
+
+            with patch("tagger.search_itunes_candidates", side_effect=fake_search):
+                with patch("tagger.search_musicbrainz_candidates", return_value=[]):
+                    with patch("tagger._try_mlx_tagger_batch", return_value=fake_mlx_response) as mock_mlx:
+                        with patch("tagger.download_cover_art", return_value=cover_bytes):
+                            u, ok, fail = tag_downloaded_files([f1, f2], export, cfg, allow_network=True)
+
+            self.assertEqual((u, ok, fail), (2, 0, 0))
+            mock_mlx.assert_called_once()
+            p1 = probe_audio_tags(cfg.ffprobe_bin, f1)
+            p2 = probe_audio_tags(cfg.ffprobe_bin, f2)
+            # Option A: each playlist track gets its OWN real original album + album_artist + cover art!
+            self.assertEqual((p1.album, p1.album_artist, p1.track_number, p1.total_tracks, p1.has_cover),
+                             ("Moon Safari", "Air", 1, 10, True))
+            self.assertEqual((p2.album, p2.album_artist, p2.track_number, p2.total_tracks, p2.has_cover),
+                             ("Selected Ambient Works 85-92", "Aphex Twin", 1, 13, True))
 
 
 if __name__ == "__main__":
