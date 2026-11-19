@@ -367,7 +367,7 @@ def _maybe_convert(
 
 
 def _open_in_finder(target: Path, reveal: bool = False) -> None:
-    """Open a downloaded folder (or reveal a single file) in macOS Finder or Windows File Explorer."""
+    """Open a downloaded folder (or reveal a single file) in macOS Finder, Windows Explorer, or Linux File Manager."""
     if not target.exists():
         return
     if sys.platform == "darwin":
@@ -383,6 +383,29 @@ def _open_in_finder(target: Path, reveal: bool = False) -> None:
             )
         else:
             os.startfile(str(target))  # type: ignore[attr-defined]
+    elif sys.platform.startswith("linux") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        if reveal and target.is_file():
+            for fm, flag in (("nautilus", "--select"), ("dolphin", "--select")):
+                fm_bin = shutil.which(fm)
+                if fm_bin:
+                    subprocess.Popen(
+                        [fm_bin, flag, str(target)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    return
+            open_target = target.parent
+        else:
+            open_target = target
+        xdg = shutil.which("xdg-open")
+        if xdg:
+            subprocess.Popen(
+                [xdg, str(open_target)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
 
 
 def _reveal_after_download(
@@ -390,7 +413,7 @@ def _reveal_after_download(
     before_files: dict[Path, float],
     preferred_dir: Path | None,
 ) -> None:
-    fm_label = "Esplora File" if os.name == "nt" else "Finder"
+    fm_label = "Esplora File" if os.name == "nt" else ("File Manager" if sys.platform.startswith("linux") else "Finder")
     post_audio = _new_audio_files(before_files, cfg.output_dir)
     if len(post_audio) == 1 and post_audio[0].parent == cfg.output_dir:
         print(f"[{fm_label}] Apro in {fm_label}: {post_audio[0]}")

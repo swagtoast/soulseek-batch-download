@@ -110,11 +110,19 @@ def write_setup_configs(
 
 
 def _can_use_gui(no_gui: bool) -> bool:
-    if no_gui or (sys.platform != "darwin" and os.name != "nt"):
+    if no_gui:
         return False
     if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
         return False
-    return True
+    if sys.platform == "darwin" or os.name == "nt":
+        return True
+    if sys.platform.startswith("linux"):
+        try:
+            from linux.slsk_ui import has_linux_gui_backend
+            return has_linux_gui_backend()
+        except Exception:
+            return False
+    return False
 
 
 def _applescript_escape(text: str) -> str:
@@ -239,6 +247,13 @@ def _run_gui_setup(cfg: PipelineConfig) -> dict | None:
 
     if os.name == "nt":
         return _run_windows_setup(cfg, existing_user)
+
+    if sys.platform.startswith("linux"):
+        try:
+            from linux.slsk_ui import run_linux_setup
+            return run_linux_setup(cfg, existing_user)
+        except Exception:
+            return None
 
     if cfg.setup_bin.is_file() and os.access(cfg.setup_bin, os.X_OK):
         extra_args = [

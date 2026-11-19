@@ -79,6 +79,15 @@ def detect_hardware_profile() -> HardwareProfile:
                 ram_gb = max(1, int(round((pages * page_size) / (1024 ** 3))))
         except Exception:
             pass
+    if sys.platform.startswith("linux") and ram_gb == 8 and Path("/proc/meminfo").is_file():
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    ram_gb = max(1, int(round(kb / (1024 ** 2))))
+                    break
+        except Exception:
+            pass
 
     is_apple_silicon = sys.platform == "darwin" and arch in {"arm64", "aarch64"}
     low_resource = ram_gb <= 8 or cpu_cores <= 4

@@ -215,6 +215,18 @@ def apply_update_from_tarball(cfg: PipelineConfig, tar_bytes: bytes) -> None:
                 dst_f.parent.mkdir(parents=True, exist_ok=True)
                 dst_f.write_bytes(src_f.read_bytes())
 
+        # Update Linux launcher .sh cleanly with executable bit preserved
+        new_sh = extracted_root / "Soulseek Batch Pipeline.sh"
+        if new_sh.is_file():
+            dst_sh = root / "Soulseek Batch Pipeline.sh"
+            dst_sh.write_bytes(new_sh.read_bytes())
+            if os.name != "nt":
+                dst_sh.chmod(0o755)
+        for linux_script in ("slsk_watcher.py",):
+            p = target_src / "linux" / linux_script
+            if p.is_file() and os.name != "nt":
+                p.chmod(0o755)
+
         # Update .command IN-PLACE to preserve any macOS Finder custom icon extended attribute!
         new_cmd = extracted_root / "Soulseek Batch Pipeline.command"
         if new_cmd.is_file():

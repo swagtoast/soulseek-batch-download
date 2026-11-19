@@ -79,6 +79,12 @@ def _can_use_gui_prompt(cfg: PipelineConfig, no_gui: bool) -> bool:
         return False
     if os.name == "nt":
         return cfg.win_prompt_ps1.is_file()
+    if sys.platform.startswith("linux"):
+        try:
+            from linux.slsk_ui import has_linux_gui_backend
+            return has_linux_gui_backend()
+        except Exception:
+            return False
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
         return True
     return sys.platform == "darwin" and Path("/usr/bin/osascript").is_file()
@@ -210,6 +216,13 @@ def _prompt_with_gui(
 ) -> tuple[bool, str, str] | None:
     if os.name == "nt":
         return _prompt_with_windows(cfg, url, default_format, label=label)
+
+    if sys.platform.startswith("linux"):
+        try:
+            from linux.slsk_ui import run_linux_prompt
+            return run_linux_prompt(url, default_format, label=label)
+        except Exception:
+            return None
 
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
         extra_args = ["--default-format", normalize_convert_format(default_format)]

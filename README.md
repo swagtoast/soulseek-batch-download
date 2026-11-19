@@ -1,10 +1,10 @@
-# Soulseek Batch Download (macOS & Windows, senza Docker)
+# Soulseek Batch Download (macOS, Linux & Windows — senza Docker)
 
-Pipeline nativa e leggera per **macOS** (Apple Silicon & Intel) e **Windows 10/11** per scaricare playlist, full album e brani da **Spotify** e **YouTube** tramite **Soulseek**, senza Docker, senza Homebrew/Winget e senza diritti di amministratore.
+Pipeline nativa e leggera per **macOS** (Apple Silicon & Intel), **Linux** (`x86_64` / `aarch64`, X11 & Wayland) e **Windows 10/11** per scaricare playlist, full album e brani da **Spotify** e **YouTube** tramite **Soulseek**, senza Docker, senza Homebrew/Winget e senza diritti di amministratore (`sudo`).
 
 ## Installazione rapida (1 comando)
 
-### macOS (Terminale)
+### macOS & Linux (Terminale — stesso comando per entrambi!)
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/swagtoast/soulseek-batch-download/main/install.sh)
 ```
@@ -13,6 +13,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/swagtoast/soulseek-batch-dow
 ```powershell
 irm https://raw.githubusercontent.com/swagtoast/soulseek-batch-download/main/install.ps1 | iex
 ```
+
+Su **Linux** rileva automaticamente architettura (`x86_64` / `aarch64`), distro, RAM, core, display server (`Wayland` / `X11` / headless) e interfaccia nativa migliore (`tkinter` a finestra unica, `zenity` GTK, `kdialog` KDE o terminale). Installa tutto senza `sudo` in `~/.local/share/soulseek-batch-download`, crea il comando `soulseek-batch`, l'icona nel menu applicazioni, il protocollo `soulseekdl://`, il **pulsante fluttuante nativo** (evidenzia o copia un link Spotify/YouTube ovunque → `Scarica con Soulseek`) e include `browser-extension/` per il tasto destro puro su Chrome/Brave/Edge/Firefox.
 
 Su **Windows** installa tutto in `%LOCALAPPDATA%\Soulseek Batch Download` (~465 MB su PC pulito, zero admin), crea l'icona sul Desktop/Start, registra il protocollo `soulseekdl://`, attiva il **pulsante fluttuante nativo** (evidenzia o copia un link Spotify/YouTube in qualsiasi app → compare subito **`Scarica con Soulseek`** vicino al cursore, oppure `Ctrl+Alt+S`) e include la cartella `browser-extension/` per il tasto destro puro su Chrome/Edge/Firefox.
 

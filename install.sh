@@ -3,17 +3,324 @@ set -euo pipefail
 
 REPO_SLUG="${SLSK_REPO_SLUG:-swagtoast/soulseek-batch-download}"
 REPO_BRANCH="${SLSK_REPO_BRANCH:-main}"
-INSTALL_DIR="${SLSK_INSTALL_DIR:-$HOME/Applications/Soulseek Batch Download}"
-SERVICES_DIR="${SLSK_SERVICES_DIR:-$HOME/Library/Services}"
 SOCKSEEK_VERSION="3.0.6"
 FFMPEG_RELEASE="b6.1.1"
 PYTHON_STANDALONE_TAG="20261110"
 PYTHON_STANDALONE_VER="3.12.16"
 
-if [ "$(uname -s)" != "Darwin" ]; then
-    echo "Errore: questo installer è pensato per macOS."
+OS_NAME="$(uname -s)"
+
+is_valid_bin() {
+    [ -x "$1" ] && [ -s "$1" ]
+}
+
+# ==============================================================================
+#  LINUX TAILORED INSTALLER (zero sudo, zero Docker, X11/Wayland/Headless aware)
+# ==============================================================================
+install_linux() {
+    local INSTALL_DIR="${SLSK_INSTALL_DIR:-$HOME/.local/share/soulseek-batch-download}"
+    local BIN_LINK_DIR="${SLSK_BIN_DIR:-$HOME/.local/bin}"
+    local APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    local ICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
+    local AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+
+    local ARCH="$(uname -m)"
+    local DISTRO="Linux"
+    if [ -r /etc/os-release ]; then
+        DISTRO="$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-${NAME:-Linux}}")"
+    fi
+    local CPU_CORES="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+    local RAM_KB="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 8388608)"
+    local RAM_GB="$(( (RAM_KB + 524288) / 1048576 ))"
+    [ "$RAM_GB" -lt 1 ] && RAM_GB=1
+
+    local DISPLAY_SERVER="Headless (Terminale)"
+    local HAS_GUI_SESSION="0"
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        DISPLAY_SERVER="Wayland"
+        HAS_GUI_SESSION="1"
+    elif [ -n "${DISPLAY:-}" ]; then
+        DISPLAY_SERVER="X11"
+        HAS_GUI_SESSION="1"
+    fi
+    local DE_NAME="${XDG_CURRENT_DESKTOP:-Desktop}"
+
+    local SOCKSEEK_ARCH="" YTDLP_ASSET="" DENO_ARCH="" FFMPEG_ARCH="" PY_ARCH="" CHIP_LABEL=""
+    case "$ARCH" in
+        x86_64|amd64)
+            SOCKSEEK_ARCH="linux-x64"
+            YTDLP_ASSET="yt-dlp_linux"
+            DENO_ARCH="x86_64-unknown-linux-gnu"
+            FFMPEG_ARCH="linux-x64"
+            PY_ARCH="x86_64-unknown-linux-gnu"
+            CHIP_LABEL="x86_64 (64-bit)"
+            ;;
+        aarch64|arm64)
+            SOCKSEEK_ARCH="linux-arm"
+            YTDLP_ASSET="yt-dlp_linux_aarch64"
+            DENO_ARCH="aarch64-unknown-linux-gnu"
+            FFMPEG_ARCH="linux-arm64"
+            PY_ARCH="aarch64-unknown-linux-gnu"
+            CHIP_LABEL="ARM64 (aarch64)"
+            ;;
+        armv7l|armv6l|armhf)
+            SOCKSEEK_ARCH="linux-arm"
+            YTDLP_ASSET="yt-dlp_linux_armv7l"
+            DENO_ARCH=""
+            FFMPEG_ARCH="linux-arm"
+            PY_ARCH=""
+            CHIP_LABEL="ARM 32-bit ($ARCH)"
+            ;;
+        *)
+            echo "Errore: architettura Linux non supportata: $ARCH"
+            exit 1
+            ;;
+    esac
+
+    echo ""
+    echo "============================================"
+    echo "  Soulseek Batch Download — Installer Linux"
+    echo "============================================"
+    echo "Profilo PC: $CHIP_LABEL | $DISTRO"
+    echo "Risorse:    ${CPU_CORES} core | ${RAM_GB} GB RAM | $DISPLAY_SERVER ($DE_NAME)"
+    echo "Cartella:   $INSTALL_DIR"
+    echo ""
+
+    local TMP_WORK="$(mktemp -d /tmp/slsk_install_XXXXXX)"
+    trap 'rm -rf "$TMP_WORK"' EXIT
+
+    mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/config" "$INSTALL_DIR/lists" "$BIN_LINK_DIR" "$APPS_DIR" "$ICONS_DIR"
+
+    echo "[1/6] Scarico l'app da GitHub ($REPO_SLUG)..."
+    curl -fL --progress-bar "https://github.com/$REPO_SLUG/archive/refs/heads/$REPO_BRANCH.tar.gz" -o "$TMP_WORK/repo.tar.gz"
+    tar -xzf "$TMP_WORK/repo.tar.gz" -C "$TMP_WORK"
+    local SRC_ROOT="$(find "$TMP_WORK" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+
+    rm -rf "$INSTALL_DIR/src" "$INSTALL_DIR/tests" "$INSTALL_DIR/assets" "$INSTALL_DIR/browser-extension"
+    cp -R "$SRC_ROOT/src" "$INSTALL_DIR/src"
+    [ -d "$SRC_ROOT/tests" ] && cp -R "$SRC_ROOT/tests" "$INSTALL_DIR/tests"
+    [ -d "$SRC_ROOT/assets" ] && cp -R "$SRC_ROOT/assets" "$INSTALL_DIR/assets"
+    [ -d "$SRC_ROOT/browser-extension" ] && cp -R "$SRC_ROOT/browser-extension" "$INSTALL_DIR/browser-extension"
+    cp "$SRC_ROOT/Soulseek Batch Pipeline.sh" "$INSTALL_DIR/Soulseek Batch Pipeline.sh"
+    cp "$SRC_ROOT/README.md" "$INSTALL_DIR/README.md"
+    [ -f "$SRC_ROOT/config/sockseek.conf.example" ] && cp "$SRC_ROOT/config/sockseek.conf.example" "$INSTALL_DIR/config/"
+    [ -f "$SRC_ROOT/config/pipeline.json.example" ] && cp "$SRC_ROOT/config/pipeline.json.example" "$INSTALL_DIR/config/"
+    chmod +x "$INSTALL_DIR/Soulseek Batch Pipeline.sh"
+    [ -f "$INSTALL_DIR/src/linux/slsk_watcher.py" ] && chmod +x "$INSTALL_DIR/src/linux/slsk_watcher.py"
+
+    # Seed auto-updater state with installed SHA
+    local INSTALLED_SHA="$(curl -fsSL --max-time 3 -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/$REPO_SLUG/commits/$REPO_BRANCH" 2>/dev/null || true)"
+    if [ "${#INSTALLED_SHA}" -eq 40 ]; then
+        printf '{"commit": "%s", "last_check": %s}\n' "$INSTALLED_SHA" "$(date +%s)" > "$INSTALL_DIR/config/.update_state.json"
+    fi
+
+    echo "[2/6] Verifico Python 3 (>=3.9)..."
+    local PYTHON_BIN=""
+    for p in \
+        "$INSTALL_DIR/runtime/python/bin/python3" \
+        "$(command -v python3 2>/dev/null || true)" \
+        "/usr/local/bin/python3" \
+        "/usr/bin/python3"; do
+        [ -n "$p" ] && [ -x "$p" ] || continue
+        if "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+            PYTHON_BIN="$p"
+            break
+        fi
+    done
+
+    if [ -z "$PYTHON_BIN" ]; then
+        if [ -z "$PY_ARCH" ]; then
+            echo "Errore: Python 3.9+ non trovato. Installa python3 dal gestore pacchetti della tua distro."
+            exit 1
+        fi
+        echo "      Scarico Python 3 standalone (zero sudo necessario)..."
+        local PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_STANDALONE_TAG}/cpython-${PYTHON_STANDALONE_VER}%2B${PYTHON_STANDALONE_TAG}-${PY_ARCH}-install_only_stripped.tar.gz"
+        mkdir -p "$INSTALL_DIR/runtime"
+        curl -fL --progress-bar "$PY_URL" -o "$TMP_WORK/python.tar.gz"
+        rm -rf "$INSTALL_DIR/runtime/python"
+        tar -xzf "$TMP_WORK/python.tar.gz" -C "$INSTALL_DIR/runtime"
+        PYTHON_BIN="$INSTALL_DIR/runtime/python/bin/python3"
+    fi
+    echo "      Python pronto: $PYTHON_BIN"
+
+    echo "[3/6] Preparo Sockseek v$SOCKSEEK_VERSION ($SOCKSEEK_ARCH)..."
+    if is_valid_bin "$INSTALL_DIR/bin/sockseek"; then
+        echo "      sockseek già presente."
+    else
+        local SOCKSEEK_URL="https://github.com/fiso64/sockseek/releases/download/v${SOCKSEEK_VERSION}/sockseek_${SOCKSEEK_VERSION}_${SOCKSEEK_ARCH}.tar.gz"
+        curl -fL --progress-bar "$SOCKSEEK_URL" -o "$TMP_WORK/sockseek.tar.gz"
+        tar -xzf "$TMP_WORK/sockseek.tar.gz" -C "$INSTALL_DIR/bin"
+        chmod +x "$INSTALL_DIR/bin/sockseek"
+        if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+            if ! "$INSTALL_DIR/bin/sockseek" --version >/dev/null 2>&1; then
+                echo "      [Avviso ARM64] Il binario upstream sockseek ARM è 32-bit (armhf): su ARM64 potrebbe servire libc6:armhf o qemu-user."
+            fi
+        fi
+    fi
+
+    echo "[4/6] Preparo yt-dlp e deno (per YouTube)..."
+    if is_valid_bin "$INSTALL_DIR/bin/yt-dlp" || command -v yt-dlp >/dev/null 2>&1; then
+        echo "      yt-dlp già presente."
+    else
+        curl -fL --progress-bar "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_ASSET}" -o "$INSTALL_DIR/bin/yt-dlp"
+        chmod +x "$INSTALL_DIR/bin/yt-dlp"
+    fi
+
+    if [ -n "$DENO_ARCH" ]; then
+        if is_valid_bin "$INSTALL_DIR/bin/deno" || command -v deno >/dev/null 2>&1; then
+            echo "      deno già presente."
+        else
+            curl -fL --progress-bar "https://github.com/denoland/deno/releases/latest/download/deno-${DENO_ARCH}.zip" -o "$TMP_WORK/deno.zip"
+            "$PYTHON_BIN" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$TMP_WORK/deno.zip" "$INSTALL_DIR/bin"
+            chmod +x "$INSTALL_DIR/bin/deno"
+        fi
+    fi
+
+    echo "[5/6] Preparo ffmpeg e ffprobe ($FFMPEG_ARCH)..."
+    if is_valid_bin "$INSTALL_DIR/bin/ffmpeg" || command -v ffmpeg >/dev/null 2>&1; then
+        echo "      ffmpeg già presente."
+    else
+        curl -fL --progress-bar "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/ffmpeg-${FFMPEG_ARCH}" -o "$INSTALL_DIR/bin/ffmpeg"
+        chmod +x "$INSTALL_DIR/bin/ffmpeg"
+    fi
+
+    if is_valid_bin "$INSTALL_DIR/bin/ffprobe" || command -v ffprobe >/dev/null 2>&1; then
+        echo "      ffprobe già presente."
+    else
+        curl -fL --progress-bar "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/ffprobe-${FFMPEG_ARCH}" -o "$INSTALL_DIR/bin/ffprobe"
+        chmod +x "$INSTALL_DIR/bin/ffprobe"
+    fi
+
+    # Optional non-interactive seeding via env vars (CI/automation)
+    if [ -n "${SLSK_USER:-}" ] && [ -n "${SLSK_PASS:-}" ]; then
+        INSTALL_DIR="$INSTALL_DIR" SLSK_USER="$SLSK_USER" SLSK_PASS="$SLSK_PASS" \
+        DOWNLOAD_DIR="${SLSK_DOWNLOAD_DIR:-$HOME/Music/Soulseek Downloads}" \
+        CONVERT_FMT="${SLSK_CONVERT_FORMAT:-flac}" "$PYTHON_BIN" - << 'PYEOF'
+import os, sys
+from pathlib import Path
+install_dir = Path(os.environ["INSTALL_DIR"])
+sys.path.insert(0, str(install_dir / "src"))
+from config import load_config, normalize_convert_format
+from setup_ui import write_setup_configs
+cfg = load_config(install_dir / "config" / "pipeline.json")
+write_setup_configs(
+    cfg,
+    username=os.environ["SLSK_USER"],
+    password=os.environ["SLSK_PASS"],
+    output_dir=Path(os.environ["DOWNLOAD_DIR"]).expanduser(),
+    convert_format=normalize_convert_format(os.environ["CONVERT_FMT"]),
+)
+PYEOF
+    fi
+
+    echo "[6/6] Integro nel desktop Linux (menu app, icona, soulseekdl://, watcher)..."
+    ln -sf "$INSTALL_DIR/Soulseek Batch Pipeline.sh" "$BIN_LINK_DIR/soulseek-batch"
+
+    if [ -f "$INSTALL_DIR/assets/app_icon.png" ]; then
+        cp "$INSTALL_DIR/assets/app_icon.png" "$ICONS_DIR/soulseek-batch-download.png"
+    fi
+
+    local DESKTOP_FILE="$APPS_DIR/soulseek-batch-download.desktop"
+    cat > "$DESKTOP_FILE" << EOF
+[Desktop Entry]
+Type=Application
+Name=Soulseek Batch Download
+Comment=Scarica playlist e album Spotify/YouTube via Soulseek con conversione e tagging automatico
+Exec="$INSTALL_DIR/Soulseek Batch Pipeline.sh" %u
+Icon=soulseek-batch-download
+Terminal=false
+Categories=AudioVideo;Audio;Network;
+MimeType=x-scheme-handler/soulseekdl;
+StartupNotify=false
+EOF
+    chmod +x "$DESKTOP_FILE"
+
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default soulseek-batch-download.desktop x-scheme-handler/soulseekdl 2>/dev/null || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$APPS_DIR" 2>/dev/null || true
+    fi
+
+    # Detect best native UI engine on this Linux system
+    local UI_MODE="Terminale interattivo"
+    local HAS_TK="0"
+    if "$PYTHON_BIN" -c 'import tkinter' >/dev/null 2>&1; then
+        HAS_TK="1"
+        UI_MODE="Finestra nativa tkinter (singola finestra)"
+    elif command -v zenity >/dev/null 2>&1; then
+        UI_MODE="Dialog nativi GTK (zenity)"
+    elif command -v kdialog >/dev/null 2>&1; then
+        UI_MODE="Dialog nativi KDE (kdialog)"
+    fi
+    echo "      Interfaccia selezionata: $UI_MODE"
+
+    # Enable lightweight floating-pill watcher only on GUI desktop with >4 GB RAM, tkinter, and clipboard tool
+    local HAS_CLIP="0"
+    if command -v wl-paste >/dev/null 2>&1 || command -v xclip >/dev/null 2>&1 || command -v xsel >/dev/null 2>&1; then
+        HAS_CLIP="1"
+    fi
+    local WATCHER_ACTIVE="0"
+    if [ "$HAS_GUI_SESSION" = "1" ] && [ "$RAM_GB" -ge 4 ] && [ "$HAS_TK" = "1" ] && [ "$HAS_CLIP" = "1" ]; then
+        mkdir -p "$AUTOSTART_DIR"
+        cat > "$AUTOSTART_DIR/soulseek-watcher.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Soulseek Batch Watcher
+Comment=Mostra il pulsante fluttuante Scarica con Soulseek quando selezioni o copi un link Spotify/YouTube
+Exec=$PYTHON_BIN "$INSTALL_DIR/src/linux/slsk_watcher.py"
+Icon=soulseek-batch-download
+Terminal=false
+X-GNOME-Autostart-enabled=true
+EOF
+        pkill -f "src/linux/slsk_watcher\.py" 2>/dev/null || true
+        nohup "$PYTHON_BIN" "$INSTALL_DIR/src/linux/slsk_watcher.py" >/dev/null 2>&1 &
+        WATCHER_ACTIVE="1"
+        echo "      Pulsante fluttuante attivo (evidenzia o copia un link Spotify/YouTube -> 'Scarica con Soulseek')."
+    else
+        echo "      Watcher in background non attivato (sessione headless/leggera o manca xclip/wl-paste/python3-tk)."
+    fi
+
+    # Launch First-Run Setup once
+    if [ -z "${SLSK_SKIP_SETUP:-}" ] && [ ! -f "$INSTALL_DIR/config/sockseek.conf" ]; then
+        echo ""
+        echo "Apro la configurazione iniziale (credenziali Soulseek + cartella download)..."
+        "$INSTALL_DIR/Soulseek Batch Pipeline.sh" --setup || true
+    fi
+
+    local SOCK_VER="$("$INSTALL_DIR/bin/sockseek" --version 2>/dev/null || echo "ok")"
+    echo ""
+    echo "============================================"
+    echo "  Installazione completata! (sockseek $SOCK_VER)"
+    echo "============================================"
+    echo "Cartella app: $INSTALL_DIR"
+    echo "Comando CLI:  $BIN_LINK_DIR/soulseek-batch \"URL\""
+    echo ""
+    echo "Come usarlo:"
+    echo "  1. Apri 'Soulseek Batch Download' dal menu applicazioni (o lancia: soulseek-batch)"
+    if [ "$WATCHER_ACTIVE" = "1" ]; then
+        echo "  2. Evidenzia o copia un link Spotify/YouTube ovunque -> clicca il pill 'Scarica con Soulseek'"
+    fi
+    echo "  3. Tasto destro puro su Chrome/Brave/Edge/Firefox: carica l'estensione in $INSTALL_DIR/browser-extension"
+    echo "  (Per modificare credenziali o cartella in futuro: soulseek-batch --setup)"
+    echo ""
+}
+
+if [ "$OS_NAME" = "Linux" ]; then
+    install_linux
+    exit 0
+fi
+
+if [ "$OS_NAME" != "Darwin" ]; then
+    echo "Errore: sistema operativo non supportato da install.sh ($OS_NAME). Su Windows usa install.ps1."
     exit 1
 fi
+
+# ==============================================================================
+#  macOS TAILORED INSTALLER (Apple Silicon & Intel, zero Homebrew, zero Docker)
+# ==============================================================================
+INSTALL_DIR="${SLSK_INSTALL_DIR:-$HOME/Applications/Soulseek Batch Download}"
+SERVICES_DIR="${SLSK_SERVICES_DIR:-$HOME/Library/Services}"
 
 # Clean up any stale legacy JXA osascript processes from older installs (e.g. Intel Air 2019).
 pkill -f "slsk_setup\.js|slsk_prompt\.js" 2>/dev/null || true
@@ -61,10 +368,6 @@ echo "=========================================="
 echo "Profilo Mac: $CHIP_LABEL | macOS $MACOS_VER | ${CPU_CORES} core | ${RAM_GB} GB RAM"
 echo "Installazione in: $INSTALL_DIR"
 echo ""
-
-is_valid_bin() {
-    [ -x "$1" ] && [ -s "$1" ]
-}
 
 TMP_WORK="$(mktemp -d /tmp/slsk_install_XXXXXX)"
 cleanup() { rm -rf "$TMP_WORK"; }

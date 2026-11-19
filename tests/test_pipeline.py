@@ -1335,5 +1335,63 @@ class AutoTaggerTests(unittest.TestCase):
                              ("Selected Ambient Works 85-92", "Aphex Twin", 1, 13, True))
 
 
+class LinuxSupportTests(unittest.TestCase):
+    def test_linux_zenity_prompt_and_headless_guard(self) -> None:
+        from linux import slsk_ui
+
+        # Headless SSH session must disable GUI dialogs cleanly
+        with patch.object(sys, "platform", "linux"):
+            with patch.dict("os.environ", {"DISPLAY": ":0", "SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"}, clear=False):
+                self.assertFalse(slsk_ui.has_linux_display())
+
+        # Active X11 desktop with zenity prompt picks chosen format
+        fake_proc = subprocess.CompletedProcess(args=["zenity"], returncode=0, stdout=".mp3 (320 kbps)\n", stderr="")
+        with patch.object(sys, "platform", "linux"):
+            with patch.dict("os.environ", {"DISPLAY": ":0", "SSH_CONNECTION": "", "SSH_TTY": ""}, clear=False):
+                with patch("linux.slsk_ui._tk_available", return_value=False):
+                    with patch("shutil.which", side_effect=lambda name: "/usr/bin/zenity" if name == "zenity" else None):
+                        with patch("subprocess.run", return_value=fake_proc):
+                            res = slsk_ui.run_linux_prompt(
+                                "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy",
+                                "flac",
+                                label="Full Album Spotify rilevato",
+                            )
+        self.assertEqual(res, (True, "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", "mp3"))
+
+    def test_linux_open_in_file_manager_uses_xdg_open_and_updater_syncs_sh_launcher(self) -> None:
+        import downloader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dl_dir = root / "Album"
+            dl_dir.mkdir()
+            with patch.object(sys, "platform", "linux"):
+                with patch.dict("os.environ", {"DISPLAY": ":0"}, clear=False):
+                    with patch("shutil.which", side_effect=lambda name: "/usr/bin/xdg-open" if name == "xdg-open" else None):
+                        with patch("subprocess.Popen") as mock_popen:
+                            downloader._open_in_finder(dl_dir, reveal=False)
+            mock_popen.assert_called_once()
+            self.assertEqual(mock_popen.call_args[0][0], ["/usr/bin/xdg-open", str(dl_dir)])
+
+            # Verify updater syncs Soulseek Batch Pipeline.sh with +x
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+                for rel, body in (
+                    ("repo-main/src/cli.py", b"# linux-updated\n"),
+                    ("repo-main/src/linux/slsk_watcher.py", b"#!/usr/bin/env python3\n"),
+                    ("repo-main/Soulseek Batch Pipeline.sh", b"#!/bin/bash\necho linux\n"),
+                ):
+                    info = tarfile.TarInfo(name=rel)
+                    info.size = len(body)
+                    tf.addfile(info, io.BytesIO(body))
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.project_root = root
+            with patch("updater._recompile_swift_helpers_if_needed"):
+                apply_update_from_tarball(cfg, buf.getvalue())
+            sh_path = root / "Soulseek Batch Pipeline.sh"
+            self.assertTrue(sh_path.is_file())
+            self.assertTrue(sh_path.stat().st_mode & 0o111)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
