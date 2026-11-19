@@ -1,0 +1,10 @@
+username = YOUR_SOULSEEK_USERNAME
+password = YOUR_SOULSEEK_PASSWORD
+output-dir = ~/Music/Soulseek Downloads
+pref-format = flac,aiff,wav
+format = flac,aiff,wav,mp3
+pref-min-bitrate = 320
+length-tol = 5
+pref-length-tol = 5
+fast-search = true
+write-index = true

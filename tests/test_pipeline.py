@@ -1,0 +1,372 @@
+"""Comprehensive unit and real conversion tests for the Soulseek Batch Pipeline."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from config import load_config
+from converter import convert_downloaded_flacs_to_aiff
+from downloader import download_collection, write_tracks_csv
+from llm_formatter import (
+    _parse_llm_json,
+    extract_timestamp_lines,
+    format_youtube_playlist_with_llm,
+    format_youtube_video_with_llm,
+    parse_track_heuristic,
+)
+from models import CollectionExport, Track
+from url_utils import classify_url, extract_url_from_text, sanitize_filename
+from youtube_extractor import extract_youtube
+
+
+class UrlUtilsTests(unittest.TestCase):
+    def test_extract_url_from_noisy_highlighted_text_and_no_scheme(self) -> None:
+        noisy = "   Dai ascolta questo album: (https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy?si=abc123). Top! "
+        self.assertEqual(
+            extract_url_from_text(noisy),
+            "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy?si=abc123",
+        )
+        bare = "youtube.com/watch?v=dQw4w9WgXcQ"
+        self.assertEqual(extract_url_from_text(bare), "https://youtube.com/watch?v=dQw4w9WgXcQ")
+
+    def test_classify_spotify_variants(self) -> None:
+        p = classify_url("https://open.spotify.com/intl-it/playlist/4rnleEAOdmFAbRcNCgZMpY?si=123")
+        self.assertEqual(p.kind, "spotify_playlist")
+        self.assertEqual(p.item_id, "4rnleEAOdmFAbRcNCgZMpY")
+
+        a = classify_url("spotify:album:4aawyAB9vmqN3uQ7FjRGTy")
+        self.assertEqual(a.kind, "spotify_album")
+        self.assertEqual(a.url, "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy")
+
+    def test_classify_youtube_variants(self) -> None:
+        pl = classify_url("https://music.youtube.com/playlist?list=OLAK5uy_abc123")
+        self.assertEqual(pl.kind, "youtube_playlist")
+        self.assertEqual(pl.item_id, "OLAK5uy_abc123")
+
+        ytm_curated = classify_url("https://music.youtube.com/watch?v=abc123&list=RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7fyNgFKWNJFs")
+        self.assertEqual(ytm_curated.kind, "youtube_playlist")
+        self.assertEqual(ytm_curated.item_id, "RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7fyNgFKWNJFs")
+
+        browse = classify_url("https://music.youtube.com/browse/MPREb_4p6v5mI2P1i")
+        self.assertEqual(browse.kind, "youtube_playlist")
+        self.assertEqual(browse.item_id, "MPREb_4p6v5mI2P1i")
+
+        watch_pl = classify_url("https://www.youtube.com/watch?v=xyz&list=PL12345")
+        self.assertEqual(watch_pl.kind, "youtube_playlist")
+        self.assertEqual(watch_pl.item_id, "PL12345")
+
+        mix_vid = classify_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ")
+        self.assertEqual(mix_vid.kind, "youtube_video")
+        self.assertEqual(mix_vid.item_id, "dQw4w9WgXcQ")
+
+        embed = classify_url("https://www.youtube.com/embed/jNQXAC9IVRw?autoplay=1")
+        self.assertEqual(embed.kind, "youtube_video")
+        self.assertEqual(embed.item_id, "jNQXAC9IVRw")
+
+        attrib = classify_url("https://www.youtube.com/attribution_link?a=abc&u=%2Fwatch%3Fv%3DjNQXAC9IVRw")
+        self.assertEqual(attrib.kind, "youtube_video")
+        self.assertEqual(attrib.item_id, "jNQXAC9IVRw")
+
+        short = classify_url("https://youtu.be/jNQXAC9IVRw?t=12")
+        self.assertEqual(short.kind, "youtube_video")
+        self.assertEqual(short.item_id, "jNQXAC9IVRw")
+
+    def test_reject_unsupported_url(self) -> None:
+        with self.assertRaises(ValueError):
+            classify_url("https://example.com/not-music")
+
+    def test_sanitize_filename(self) -> None:
+        self.assertEqual(sanitize_filename('  A/B: C*?"<>|  '), "A B C")
+
+
+class LlmFallbackAndYouTubeExtractorTests(unittest.TestCase):
+    def test_heuristic_cleans_garbage_and_avoids_fake_channel_artist(self) -> None:
+        tr = parse_track_heuristic("04. Dj NM - Dance Power 12 (Megamix) [Official Video] [HD]", "EuroChannel")
+        self.assertEqual(tr.artist, "Dj NM")
+        self.assertEqual(tr.title, "Dance Power 12 (Megamix)")
+
+        # Archive channel without separator should NOT become the artist
+        tr2 = parse_track_heuristic("Matata [Vinyl Rip]", "KaderFunkyman")
+        self.assertEqual(tr2.artist, "")
+        self.assertEqual(tr2.title, "Matata")
+
+        # Topic channel IS the artist
+        tr3 = parse_track_heuristic("Afro Voodoo", "Alessandro Alessandroni - Topic")
+        self.assertEqual(tr3.artist, "Alessandro Alessandroni")
+
+    def test_parse_llm_json_strips_markdown_fences(self) -> None:
+        raw = '```json\n{"artist": "Daft Punk", "title": "Voyager"}\n```'
+        parsed = _parse_llm_json(raw)
+        self.assertEqual(parsed["artist"], "Daft Punk")
+
+    def test_extract_timestamp_lines(self) -> None:
+        desc = """
+        Tracklist:
+        00:00 Cymande - Zion I
+        03:20 Cymande - One More
+        06:05 Cymande - Getting It Back
+        """
+        tracks = extract_timestamp_lines(desc, total_duration=600)
+        self.assertEqual(len(tracks), 3)
+        self.assertEqual(tracks[0].artist, "Cymande")
+        self.assertEqual(tracks[0].title, "Zion I")
+        self.assertEqual(tracks[0].duration_sec, 200)
+        self.assertEqual(tracks[2].duration_sec, 235)
+
+    def test_playlist_resolving_to_single_video_falls_back_cleanly(self) -> None:
+        cfg = load_config()
+        parsed = classify_url("https://www.youtube.com/playlist?list=PLfake")
+        single_meta = {
+            "_type": "video",
+            "title": "Cymande - Zion I (Official Audio)",
+            "uploader": "Cymande - Topic",
+            "duration": 210,
+            "description": "",
+        }
+        with patch("youtube_extractor._run_yt_dlp_json", return_value=single_meta):
+            with patch("llm_formatter.OllamaSession") as mock_session_cls:
+                inst = mock_session_cls.return_value.__enter__.return_value
+                inst.available = False
+                export = extract_youtube(parsed, cfg)
+        self.assertEqual(export.kind, "single_track")
+        self.assertEqual(export.tracks[0].artist, "Cymande")
+        self.assertEqual(export.tracks[0].title, "Zion I")
+
+    def test_format_playlist_with_mocked_ollama(self) -> None:
+        cfg = load_config()
+        raw_entries = [
+            {"title": "01. Boiler Room | Fred again.. - Delilah [HD]", "channel": "Boiler Room", "duration": 250},
+            {"title": "Winx - Don't Laugh (Original Live Raw Mix) (Official Audio)", "channel": "VinylChannel", "duration": 310},
+        ]
+        mock_reply = {
+            "is_album": False,
+            "album_artist": "",
+            "album_title": "",
+            "tracks": [
+                {"idx": 0, "artist": "Fred again..", "title": "Delilah"},
+                {"idx": 1, "artist": "Winx", "title": "Don't Laugh (Original Live Raw Mix)"},
+            ],
+        }
+        with patch("llm_formatter.OllamaSession") as mock_session_cls:
+            inst = mock_session_cls.return_value.__enter__.return_value
+            inst.available = True
+            inst.model = "qwen2.5:14b"
+            inst.chat_json.return_value = mock_reply
+
+            export = format_youtube_playlist_with_llm(
+                cfg=cfg,
+                playlist_title="Club Cuts",
+                playlist_uploader="User",
+                playlist_id="PL123",
+                raw_entries=raw_entries,
+                source_url="https://www.youtube.com/playlist?list=PL123",
+            )
+            self.assertEqual(export.kind, "playlist")
+            self.assertTrue(export.used_llm)
+            self.assertEqual(export.tracks[0].artist, "Fred again..")
+            self.assertEqual(export.tracks[1].title, "Don't Laugh (Original Live Raw Mix)")
+            inst.chat_json.assert_called_once()
+            self.assertEqual(inst.chat_json.call_args.kwargs["keep_alive"], 0)
+
+    def test_format_full_album_video_with_mocked_ollama(self) -> None:
+        cfg = load_config()
+        meta = {
+            "title": "Cymande - Cymande (1972) [Full Album]",
+            "uploader": "Vinyl Archive",
+            "duration": 2200,
+            "chapters": [
+                {"title": "Zion I", "start_time": 0, "end_time": 200},
+                {"title": "One More", "start_time": 200, "end_time": 365},
+                {"title": "Getting It Back", "start_time": 365, "end_time": 600},
+            ],
+            "description": "",
+        }
+        mock_reply = {
+            "is_full_album": True,
+            "album_artist": "Cymande",
+            "album_title": "Cymande",
+            "tracks": [
+                {"artist": "Cymande", "title": "Zion I", "duration_sec": 200},
+                {"artist": "Cymande", "title": "One More", "duration_sec": 165},
+                {"artist": "Cymande", "title": "Getting It Back", "duration_sec": 235},
+            ],
+        }
+        with patch("llm_formatter.OllamaSession") as mock_session_cls:
+            inst = mock_session_cls.return_value.__enter__.return_value
+            inst.available = True
+            inst.model = "qwen2.5:14b"
+            inst.chat_json.return_value = mock_reply
+
+            export = format_youtube_video_with_llm(cfg, meta, "https://www.youtube.com/watch?v=abc")
+            self.assertEqual(export.kind, "album")
+            self.assertEqual(export.artist, "Cymande")
+            self.assertEqual(export.album, "Cymande")
+            self.assertEqual(export.total_tracks, 3)
+
+
+class DownloaderAndConverterTests(unittest.TestCase):
+    def test_write_csv_with_and_without_durations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "with_len.csv"
+            exp1 = CollectionExport(
+                kind="playlist",
+                name="Test",
+                tracks=[Track(artist="Artist, One", title="Song, Vol. 1", duration_sec=210)],
+            )
+            write_tracks_csv(exp1, p1)
+            text1 = p1.read_text(encoding="utf-8")
+            self.assertIn("Artist,Title,Album,Length", text1)
+            self.assertIn('"Artist, One","Song, Vol. 1",,210', text1)
+
+            p2 = Path(tmp) / "no_len.csv"
+            exp2 = CollectionExport(
+                kind="playlist",
+                name="Test2",
+                tracks=[Track(artist="Artist", title="Song", duration_sec=None)],
+            )
+            write_tracks_csv(exp2, p2)
+            text2 = p2.read_text(encoding="utf-8")
+            self.assertIn("Artist,Title,Album", text2)
+            self.assertNotIn("Length", text2)
+
+    def test_youtube_adds_relaxed_length_tolerance_and_album_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config()
+            cfg.output_dir = root / "downloads"
+            cfg.lists_dir = root / "lists"
+            cfg.sockseek_bin = root / "sockseek"
+            cfg.sockseek_conf = root / "sockseek.conf"
+            cfg.sockseek_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+            cfg.sockseek_conf.write_text("username=x\n", encoding="utf-8")
+
+            export = CollectionExport(
+                kind="album",
+                name="Daft Punk - Discovery",
+                artist="Daft Punk",
+                album="Discovery",
+                total_tracks=2,
+                source_platform="youtube",
+                tracks=[
+                    Track(artist="Daft Punk", title="One More Time", album="Discovery", duration_sec=320),
+                    Track(artist="Daft Punk", title="Aerodynamic", album="Discovery", duration_sec=212),
+                ],
+            )
+
+            calls: list[list[str]] = []
+
+            def fake_run(cmd: list[str]) -> int:
+                calls.append(cmd)
+                return 1 if len(calls) == 1 else 0
+
+            with patch("downloader._run_sockseek", side_effect=fake_run):
+                with patch("downloader._open_in_finder") as mock_finder:
+                    rc = download_collection(export, cfg)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(calls), 2)
+            self.assertIn("--length-tol", calls[0])
+            self.assertIn("15", calls[0])
+            self.assertIn("-a", calls[0])
+            self.assertTrue(calls[1][1].endswith("Daft Punk - Discovery.csv"))
+            mock_finder.assert_not_called()
+
+    def test_download_opens_finder_after_flac_to_aiff_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config()
+            cfg.output_dir = root / "downloads"
+            cfg.lists_dir = root / "lists"
+            cfg.sockseek_bin = root / "sockseek"
+            cfg.sockseek_conf = root / "sockseek.conf"
+            cfg.sockseek_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+            cfg.sockseek_conf.write_text("username=x\n", encoding="utf-8")
+            if not Path(cfg.ffmpeg_bin).is_file() or not Path(cfg.ffprobe_bin).is_file():
+                self.skipTest("ffmpeg/ffprobe non disponibili")
+
+            export = CollectionExport(
+                kind="playlist",
+                name="My Cool Playlist",
+                tracks=[Track(artist="Tester", title="Song One")],
+            )
+            playlist_dir = cfg.output_dir / "My Cool Playlist"
+
+            def fake_run(cmd: list[str]) -> int:
+                playlist_dir.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    [
+                        cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                        "-c:a", "flac", str(playlist_dir / "01 - Song One.flac"),
+                    ],
+                    check=True,
+                )
+                return 0
+
+            with patch("downloader._run_sockseek", side_effect=fake_run):
+                with patch("downloader._open_in_finder") as mock_finder:
+                    rc = download_collection(export, cfg, convert_aiff=True, open_finder=True)
+
+            self.assertEqual(rc, 0)
+            self.assertTrue((playlist_dir / "01 - Song One.aiff").is_file())
+            self.assertFalse((playlist_dir / "01 - Song One.flac").exists())
+            mock_finder.assert_called_once_with(playlist_dir, reveal=False)
+
+    def test_real_ffmpeg_converts_flac_to_aiff_deletes_flac_and_keeps_mp3(self) -> None:
+        cfg = load_config()
+        if not Path(cfg.ffmpeg_bin).is_file() or not Path(cfg.ffprobe_bin).is_file():
+            self.skipTest("ffmpeg/ffprobe non disponibili")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "My Playlist"
+            folder.mkdir(parents=True)
+            flac_file = folder / "01 - Track One.flac"
+            mp3_file = folder / "02 - Track Two.mp3"
+
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=0.4",
+                    "-metadata", "title=Track One", "-metadata", "artist=Tester",
+                    "-c:a", "flac", str(flac_file),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=880:duration=0.4",
+                    "-c:a", "libmp3lame", "-b:a", "320k", str(mp3_file),
+                ],
+                check=True,
+            )
+            index_csv = folder / "_index.csv"
+            index_csv.write_text(
+                "filepath,artist,album,title\n./01 - Track One.flac,Tester,,Track One\n./02 - Track Two.mp3,Tester,,Track Two\n",
+                encoding="utf-8",
+            )
+
+            converted, failed = convert_downloaded_flacs_to_aiff(
+                [flac_file, mp3_file],
+                ffmpeg_bin=cfg.ffmpeg_bin,
+                ffprobe_bin=cfg.ffprobe_bin,
+            )
+            self.assertEqual((converted, failed), (1, 0))
+            self.assertFalse(flac_file.exists())
+            self.assertTrue(flac_file.with_suffix(".aiff").is_file())
+            self.assertTrue(mp3_file.is_file())
+            self.assertIn("./01 - Track One.aiff", index_csv.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
