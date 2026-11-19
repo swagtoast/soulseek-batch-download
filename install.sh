@@ -95,22 +95,26 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 echo "      Python pronto: $PYTHON_BIN"
 
-echo "[3/6] Scarico Sockseek v$SOCKSEEK_VERSION ($SOCKSEEK_ARCH)..."
-SOCKSEEK_URL="https://github.com/fiso64/sockseek/releases/download/v${SOCKSEEK_VERSION}/sockseek_${SOCKSEEK_VERSION}_${SOCKSEEK_ARCH}.tar.gz"
-curl -fL --progress-bar "$SOCKSEEK_URL" -o "$TMP_WORK/sockseek.tar.gz"
-tar -xzf "$TMP_WORK/sockseek.tar.gz" -C "$INSTALL_DIR/bin"
-chmod +x "$INSTALL_DIR/bin/sockseek"
+echo "[3/6] Preparo Sockseek v$SOCKSEEK_VERSION ($SOCKSEEK_ARCH)..."
+if [ -x "$INSTALL_DIR/bin/sockseek" ]; then
+    echo "      sockseek già presente."
+else
+    SOCKSEEK_URL="https://github.com/fiso64/sockseek/releases/download/v${SOCKSEEK_VERSION}/sockseek_${SOCKSEEK_VERSION}_${SOCKSEEK_ARCH}.tar.gz"
+    curl -fL --progress-bar "$SOCKSEEK_URL" -o "$TMP_WORK/sockseek.tar.gz"
+    tar -xzf "$TMP_WORK/sockseek.tar.gz" -C "$INSTALL_DIR/bin"
+    chmod +x "$INSTALL_DIR/bin/sockseek"
+fi
 
 echo "[4/6] Preparo yt-dlp e deno (per YouTube)..."
-if command -v yt-dlp >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/yt-dlp" ] || [ -x "/usr/local/bin/yt-dlp" ]; then
-    echo "      yt-dlp già presente sul sistema."
+if [ -x "$INSTALL_DIR/bin/yt-dlp" ] || command -v yt-dlp >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/yt-dlp" ] || [ -x "/usr/local/bin/yt-dlp" ]; then
+    echo "      yt-dlp già presente."
 else
     curl -fL --progress-bar "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" -o "$INSTALL_DIR/bin/yt-dlp"
     chmod +x "$INSTALL_DIR/bin/yt-dlp"
 fi
 
-if command -v deno >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/deno" ] || [ -x "/usr/local/bin/deno" ]; then
-    echo "      deno già presente sul sistema."
+if [ -x "$INSTALL_DIR/bin/deno" ] || command -v deno >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/deno" ] || [ -x "/usr/local/bin/deno" ]; then
+    echo "      deno già presente."
 else
     curl -fL --progress-bar "https://github.com/denoland/deno/releases/latest/download/deno-${DENO_ARCH}.zip" -o "$TMP_WORK/deno.zip"
     /usr/bin/unzip -oq "$TMP_WORK/deno.zip" -d "$INSTALL_DIR/bin"
@@ -118,26 +122,46 @@ else
 fi
 
 echo "[5/6] Preparo ffmpeg, ffprobe e finestra nativa macOS..."
-if command -v ffmpeg >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffmpeg" ] || [ -x "/usr/local/bin/ffmpeg" ]; then
-    echo "      ffmpeg già presente sul sistema."
+if [ -x "$INSTALL_DIR/bin/ffmpeg" ] || command -v ffmpeg >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffmpeg" ] || [ -x "/usr/local/bin/ffmpeg" ]; then
+    echo "      ffmpeg già presente."
 else
     curl -fL --progress-bar "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/ffmpeg-${FFMPEG_ARCH}" -o "$INSTALL_DIR/bin/ffmpeg"
     chmod +x "$INSTALL_DIR/bin/ffmpeg"
 fi
 
-if command -v ffprobe >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffprobe" ] || [ -x "/usr/local/bin/ffprobe" ]; then
-    echo "      ffprobe già presente sul sistema."
+if [ -x "$INSTALL_DIR/bin/ffprobe" ] || command -v ffprobe >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffprobe" ] || [ -x "/usr/local/bin/ffprobe" ]; then
+    echo "      ffprobe già presente."
 else
     curl -fL --progress-bar "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/ffprobe-${FFMPEG_ARCH}" -o "$INSTALL_DIR/bin/ffprobe"
     chmod +x "$INSTALL_DIR/bin/ffprobe"
 fi
 
-# Compile native Swift helpers if Xcode Command Line Tools exist; otherwise src/slsk_*.js JXA runs natively.
+# Optionally compile native Swift UI helpers with a strict timeout; src/slsk_*.js JXA runs natively with zero delay.
 if xcode-select -p >/dev/null 2>&1 && command -v swiftc >/dev/null 2>&1; then
-    swiftc -O "$INSTALL_DIR/src/slsk_prompt.swift" -o "$INSTALL_DIR/bin/slsk-prompt" 2>/dev/null || true
-    swiftc -O "$INSTALL_DIR/src/slsk_setup.swift" -o "$INSTALL_DIR/bin/slsk-setup" 2>/dev/null || true
-    [ -f "$INSTALL_DIR/bin/slsk-prompt" ] && chmod +x "$INSTALL_DIR/bin/slsk-prompt"
-    [ -f "$INSTALL_DIR/bin/slsk-setup" ] && chmod +x "$INSTALL_DIR/bin/slsk-setup"
+    echo "      Compilo finestra nativa macOS (max 35s, altrimenti usa modalità rapida JXA)..."
+    INSTALL_DIR="$INSTALL_DIR" "$PYTHON_BIN" - << 'PYEOF' || true
+import os, subprocess
+from pathlib import Path
+root = Path(os.environ["INSTALL_DIR"])
+for src_name, bin_name in (("slsk_prompt.swift", "slsk-prompt"), ("slsk_setup.swift", "slsk-setup")):
+    out_bin = root / "bin" / bin_name
+    try:
+        res = subprocess.run(
+            ["swiftc", "-Onone", str(root / "src" / src_name), "-o", str(out_bin)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=35,
+            check=False,
+        )
+        if res.returncode == 0 and out_bin.is_file():
+            out_bin.chmod(0o755)
+        else:
+            out_bin.unlink(missing_ok=True)
+    except subprocess.TimeoutExpired:
+        out_bin.unlink(missing_ok=True)
+        print("      Compilazione Swift lenta su questo Mac: uso la finestra nativa JXA (istantanea).")
+        break
+PYEOF
 fi
 
 xattr -dr com.apple.quarantine "$INSTALL_DIR/bin" 2>/dev/null || true
