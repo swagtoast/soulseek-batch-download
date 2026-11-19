@@ -208,13 +208,16 @@ def convert_downloaded_flacs(
     target_format: str,
     ffmpeg_bin: str,
     ffprobe_bin: str,
+    delete_original: bool = True,
 ) -> tuple[int, int]:
-    """Convert downloaded .flac files to 'aiff' (24-bit PCM) or 'mp3' (320 kbps) and delete original .flac files.
+    """Convert downloaded .flac files to 'aiff' (24-bit PCM) or 'mp3' (320 kbps).
 
+    When target_format is 'flac' or 'none', conversion is skipped completely.
+    Deletes original .flac files only when delete_original=True and ffprobe verification succeeds.
     Already-downloaded .mp3 files are always left untouched.
     Returns (converted_count, failed_count).
     """
-    fmt = (target_format or "none").strip().lower()
+    fmt = (target_format or "flac").strip().lower().lstrip(".")
     if fmt not in {"aiff", "mp3"}:
         return (0, 0)
 
@@ -229,7 +232,8 @@ def convert_downloaded_flacs(
             print(f"[{tag}] Nessun file .flac da convertire ({mp3_count} file .mp3 mantenuti invariati).")
         return (0, 0)
 
-    print(f"\n[{tag}] Conversione di {len(flacs)} file .flac in {desc}...")
+    keep_note = " — elimino originali" if delete_original else " — mantengo originali"
+    print(f"\n[{tag}] Conversione di {len(flacs)} file .flac in {desc}{keep_note}...")
     converted = 0
     failed = 0
     replacements: dict[Path, Path] = {}
@@ -262,8 +266,9 @@ def convert_downloaded_flacs(
 
             final_out = _unique_target_path(flac_path, suffix)
             shutil.move(str(temp_out), str(final_out))
-            flac_path.unlink()
-            replacements[flac_path] = final_out
+            if delete_original:
+                flac_path.unlink()
+                replacements[flac_path] = final_out
             converted += 1
             print(f"  [{idx}/{len(flacs)}] {flac_path.name} -> {final_out.name}")
         except Exception as exc:
@@ -272,7 +277,8 @@ def convert_downloaded_flacs(
         finally:
             temp_out.unlink(missing_ok=True)
 
-    _update_index_csv(replacements)
+    if delete_original:
+        _update_index_csv(replacements)
     mp3_count = sum(1 for p in downloaded_audio if p.suffix.lower() == ".mp3")
     if mp3_count:
         print(f"[{tag}] Mantenuti invariati {mp3_count} file .mp3 originali.")

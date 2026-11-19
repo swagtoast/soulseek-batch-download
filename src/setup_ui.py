@@ -55,7 +55,8 @@ def write_setup_configs(
     username: str,
     password: str,
     output_dir: Path,
-    convert_format: str | bool = "none",
+    convert_format: str | bool = "flac",
+    delete_original: bool = True,
 ) -> None:
     """Persist Soulseek credentials and pipeline preferences with owner-only (600) permissions."""
     fmt = normalize_convert_format(convert_format)
@@ -96,6 +97,7 @@ def write_setup_configs(
             "llm_batch_size": existing.get("llm_batch_size", 25),
             "convert_format": fmt,
             "convert_flac_to_aiff": fmt == "aiff",
+            "delete_original": bool(delete_original),
             "setup_completed": True,
         }
     )
@@ -121,6 +123,8 @@ def _run_gui_setup(cfg: PipelineConfig) -> dict | None:
         str(cfg.output_dir),
         "--default-format",
         cfg.convert_format,
+        "--default-delete",
+        "true" if cfg.delete_original else "false",
     ]
     if existing_user:
         extra_args.extend(["--default-user", existing_user])
@@ -163,20 +167,29 @@ def _run_terminal_setup(cfg: PipelineConfig) -> dict:
     d = input(f"Cartella download [{default_dir}]: ").strip() or default_dir
     d = str(Path(d).expanduser())
 
-    print("Conversione automatica dei file .flac scaricati:")
-    print("  1) Nessuna (mantieni FLAC e MP3 originali)")
-    print("  2) AIFF (PCM 24-bit lossless, elimina .flac)")
-    print("  3) MP3 (320 kbps, elimina .flac, lascia .mp3 invariati)")
-    default_idx = {"none": "1", "aiff": "2", "mp3": "3"}.get(cfg.convert_format, "1")
-    ans = input(f"Scegli [1/2/3, default {default_idx}]: ").strip().lower()
+    print("Formato:")
+    print("  1) .flac (lossless)")
+    print("  2) .aiff (PCM 24-bit lossless)")
+    print("  3) .mp3 (320 kbps)")
+    default_idx = {"flac": "1", "aiff": "2", "mp3": "3"}.get(cfg.convert_format, "1")
+    ans = input(f"Scegli [1/2/3, default {default_idx}]: ").strip().lower().lstrip(".")
     if ans in {"2", "aiff", "aif"}:
         conv_fmt = "aiff"
     elif ans in {"3", "mp3", "320"}:
         conv_fmt = "mp3"
-    elif ans in {"1", "none", "no", "n"}:
-        conv_fmt = "none"
+    elif ans in {"1", "flac", "none", "no", "n"}:
+        conv_fmt = "flac"
     else:
         conv_fmt = cfg.convert_format
+
+    del_orig = cfg.delete_original
+    if conv_fmt in {"aiff", "mp3"}:
+        dhint = "S/n" if del_orig else "s/N"
+        dans = input(f"Elimina file originale dopo la conversione? [{dhint}]: ").strip().lower()
+        if dans in {"s", "si", "sì", "y", "yes"}:
+            del_orig = True
+        elif dans in {"n", "no"}:
+            del_orig = False
 
     return {
         "confirmed": True,
@@ -184,6 +197,7 @@ def _run_terminal_setup(cfg: PipelineConfig) -> dict:
         "password": p,
         "output_dir": d,
         "convert_format": conv_fmt,
+        "delete_original": del_orig,
     }
 
 
@@ -205,13 +219,14 @@ def ensure_configured(cfg: PipelineConfig, force_setup: bool = False, no_gui: bo
     username = re.sub(r"[\r\n]+", "", str(result.get("username") or "")).strip()
     password = re.sub(r"[\r\n]+", "", str(result.get("password") or ""))
     output_dir = Path(str(result.get("output_dir") or cfg.output_dir)).expanduser()
-    raw_fmt = result.get("convert_format", result.get("convert_flac_to_aiff", "none"))
+    raw_fmt = result.get("convert_format", result.get("convert_flac_to_aiff", "flac"))
     convert_fmt = normalize_convert_format(raw_fmt)
+    delete_original = bool(result.get("delete_original", True))
 
     if not username or not password:
         return None
 
-    write_setup_configs(cfg, username, password, output_dir, convert_fmt)
-    fmt_label = {"none": "Nessuna", "aiff": "FLAC -> AIFF (24-bit)", "mp3": "FLAC -> MP3 (320 kbps)"}[convert_fmt]
-    print(f"[Setup] Configurazione salvata! Cartella download: {output_dir} | Conversione: {fmt_label}")
+    write_setup_configs(cfg, username, password, output_dir, convert_fmt, delete_original)
+    fmt_label = {"flac": ".flac", "aiff": ".aiff (24-bit)", "mp3": ".mp3 (320 kbps)"}[convert_fmt]
+    print(f"[Setup] Configurazione salvata! Cartella download: {output_dir} | Formato: {fmt_label}")
     return load_config(cfg.config_file)

@@ -84,9 +84,15 @@ def _prompt_with_gui(
     cfg: PipelineConfig,
     url: str | None,
     default_format: str,
+    default_delete: bool = True,
     label: str | None = None,
-) -> tuple[bool, str, str] | None:
-    extra_args = ["--default-format", normalize_convert_format(default_format)]
+) -> tuple[bool, str, str, bool] | None:
+    extra_args = [
+        "--default-format",
+        normalize_convert_format(default_format),
+        "--default-delete",
+        "true" if default_delete else "false",
+    ]
     if url:
         extra_args.extend(["--url", url])
     if label:
@@ -100,7 +106,7 @@ def _prompt_with_gui(
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     raw = (proc.stdout or "").strip()
     if not raw:
-        return None if proc.returncode != 0 else (False, "", default_format)
+        return None if proc.returncode != 0 else (False, "", default_format, default_delete)
     try:
         data = json.loads(raw)
         raw_fmt = data.get("convert_format", data.get("convert_flac_to_aiff", default_format))
@@ -108,6 +114,7 @@ def _prompt_with_gui(
             bool(data.get("confirmed")),
             str(data.get("url") or ""),
             normalize_convert_format(raw_fmt),
+            bool(data.get("delete_original", default_delete)),
         )
     except json.JSONDecodeError:
         return None
@@ -130,31 +137,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--convert",
         dest="convert_format",
-        choices=("none", "aiff", "mp3"),
+        choices=("flac", "none", "aiff", "mp3"),
         default=None,
-        help="Formato di conversione per i .flac scaricati: none, aiff (24-bit) o mp3 (320 kbps)",
+        help="Formato desiderato: flac (nessuna conversione), aiff (PCM 24-bit) o mp3 (320 kbps)",
     )
     parser.add_argument(
         "--convert-aiff",
         dest="convert_format",
         action="store_const",
         const="aiff",
-        help="Scorciatoia per --convert aiff (FLAC -> AIFF 24-bit, elimina .flac, lascia .mp3 invariati)",
+        help="Scorciatoia per --convert aiff (FLAC -> AIFF 24-bit)",
     )
     parser.add_argument(
         "--convert-mp3",
         dest="convert_format",
         action="store_const",
         const="mp3",
-        help="Scorciatoia per --convert mp3 (FLAC -> MP3 320 kbps, elimina .flac, lascia .mp3 invariati)",
+        help="Scorciatoia per --convert mp3 (FLAC -> MP3 320 kbps)",
     )
     parser.add_argument(
         "--no-convert",
         "--no-convert-aiff",
         dest="convert_format",
         action="store_const",
-        const="none",
+        const="flac",
         help="Mantiene i .flac originali senza convertirli",
+    )
+    parser.add_argument(
+        "--delete-original",
+        dest="delete_original",
+        action="store_true",
+        default=None,
+        help="Elimina il file .flac originale dopo la conversione verificata",
+    )
+    parser.add_argument(
+        "--keep-original",
+        dest="delete_original",
+        action="store_false",
+        help="Mantiene il file .flac originale dopo la conversione",
     )
     parser.add_argument("--no-gui", action="store_true", help="Disabilita finestre grafiche di input/setup")
     parser.add_argument("--no-finder", action="store_true", help="Non aprire il Finder al termine del download")
@@ -178,46 +198,51 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_input = args.url
     convert_format = cfg.convert_format if args.convert_format is None else normalize_convert_format(args.convert_format)
+    delete_original = cfg.delete_original if args.delete_original is None else bool(args.delete_original)
     interactive = False
 
     if not raw_input:
         interactive = True
         gui_res = None
         if _can_use_gui_prompt(cfg, args.no_gui) and not args.export_only:
-            gui_res = _prompt_with_gui(cfg, None, convert_format)
+            gui_res = _prompt_with_gui(cfg, None, convert_format, default_delete=delete_original)
         if gui_res is not None:
-            confirmed, chosen_url, chosen_convert = gui_res
+            confirmed, chosen_url, chosen_convert, chosen_delete = gui_res
             if not confirmed:
                 print("Operazione annullata.")
                 return 0
             raw_input = chosen_url
             if args.convert_format is None:
                 convert_format = chosen_convert
-                save_convert_preference(cfg, convert_format)
+            if args.delete_original is None:
+                delete_original = chosen_delete
+            save_convert_preference(cfg, convert_format, delete_original)
         else:
             try:
                 raw_input = input("Incolla URL Spotify o YouTube (playlist / album / video full album): ").strip()
             except EOFError:
                 return 1
-    elif args.convert_format is not None:
-        save_convert_preference(cfg, convert_format)
+    elif args.convert_format is not None or args.delete_original is not None:
+        save_convert_preference(cfg, convert_format, delete_original)
     elif not args.export_only and not did_first_run_setup and _can_use_gui_prompt(cfg, args.no_gui):
-        # Show the conversion format box (Nessuna / AIFF 24-bit / MP3 320 kbps) for every download
-        # (Spotify or YouTube, playlist or album or track) unless explicit CLI --convert* or --no-gui was passed.
+        # Show format selector (.flac / .aiff / .mp3) + delete_original checkbox for every download
+        # (Spotify or YouTube, playlist or album or track) unless explicit CLI flags or --no-gui were passed.
         gui_res = _prompt_with_gui(
             cfg,
             raw_input,
             convert_format,
+            default_delete=delete_original,
             label=_describe_source_url(raw_input),
         )
         if gui_res is not None:
-            confirmed, chosen_url, chosen_convert = gui_res
+            confirmed, chosen_url, chosen_convert, chosen_delete = gui_res
             if not confirmed:
                 print("Operazione annullata.")
                 return 0
             raw_input = chosen_url or raw_input
             convert_format = chosen_convert
-            save_convert_preference(cfg, convert_format)
+            delete_original = chosen_delete
+            save_convert_preference(cfg, convert_format, delete_original)
 
     try:
         export = extract_collection(raw_input, cfg)
@@ -228,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
             export_only=args.export_only,
             force_mode=args.mode,
             convert_format=convert_format,
+            delete_original=delete_original,
             open_finder=not args.no_finder,
         )
     except KeyboardInterrupt:

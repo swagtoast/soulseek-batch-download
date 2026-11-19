@@ -307,17 +307,17 @@ class FirstRunSetupTests(unittest.TestCase):
 
     def test_conversion_box_shown_for_spotify_and_youtube_playlists_and_albums(self) -> None:
         cases = [
-            ("https://open.spotify.com/playlist/4rnleEAOdmFAbRcNCgZMpY", "Playlist Spotify rilevata", "aiff"),
-            ("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", "Full Album Spotify rilevato", "mp3"),
-            ("https://www.youtube.com/playlist?list=PLGyZUTYD4yVA", "Playlist / Album YouTube rilevato", "mp3"),
-            ("https://www.youtube.com/watch?v=ZIHFT1YLmgg", "Video / Full Album YouTube rilevato", "aiff"),
+            ("https://open.spotify.com/playlist/4rnleEAOdmFAbRcNCgZMpY", "Playlist Spotify rilevata", "aiff", True),
+            ("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", "Full Album Spotify rilevato", "mp3", False),
+            ("https://www.youtube.com/playlist?list=PLGyZUTYD4yVA", "Playlist / Album YouTube rilevato", "mp3", True),
+            ("https://www.youtube.com/watch?v=ZIHFT1YLmgg", "Video / Full Album YouTube rilevato", "flac", True),
         ]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = load_config(root / "config" / "pipeline.json")
             cfg.sockseek_conf = root / "config" / "sockseek.conf"
             cfg.config_file = root / "config" / "pipeline.json"
-            write_setup_configs(cfg, "user_ok", "pass_ok", root / "Music", "none")
+            write_setup_configs(cfg, "user_ok", "pass_ok", root / "Music", "flac", True)
             cfg = load_config(cfg.config_file)
             cfg.sockseek_conf = root / "config" / "sockseek.conf"
 
@@ -326,12 +326,15 @@ class FirstRunSetupTests(unittest.TestCase):
                 name="Sample",
                 tracks=[Track(artist="A", title="B")],
             )
-            for url, expected_label, chosen_fmt in cases:
+            for url, expected_label, chosen_fmt, chosen_del in cases:
                 with patch("cli.load_config", return_value=cfg):
                     with patch("cli.is_first_run_needed", return_value=False):
                         with patch("cli.ensure_configured", return_value=cfg):
                             with patch("cli._can_use_gui_prompt", return_value=True):
-                                with patch("cli._prompt_with_gui", return_value=(True, url, chosen_fmt)) as mock_prompt:
+                                with patch(
+                                    "cli._prompt_with_gui",
+                                    return_value=(True, url, chosen_fmt, chosen_del),
+                                ) as mock_prompt:
                                     with patch("cli.extract_collection", return_value=fake_export):
                                         with patch("cli.download_collection", return_value=0) as mock_dl:
                                             rc = cli.main([url])
@@ -339,6 +342,7 @@ class FirstRunSetupTests(unittest.TestCase):
                 mock_prompt.assert_called_once()
                 self.assertEqual(mock_prompt.call_args.kwargs.get("label"), expected_label)
                 self.assertEqual(mock_dl.call_args.kwargs.get("convert_format"), chosen_fmt)
+                self.assertEqual(mock_dl.call_args.kwargs.get("delete_original"), chosen_del)
 
 
 class DownloaderAndConverterTests(unittest.TestCase):
@@ -551,6 +555,48 @@ class DownloaderAndConverterTests(unittest.TestCase):
             codec, bitrate = probe.stdout.strip().split(",")
             self.assertEqual(codec, "mp3")
             self.assertEqual(int(bitrate), 320000)
+
+    def test_keep_original_and_flac_skip_conversion(self) -> None:
+        cfg = load_config()
+        if not Path(cfg.ffmpeg_bin).is_file() or not Path(cfg.ffprobe_bin).is_file():
+            self.skipTest("ffmpeg/ffprobe non disponibili")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "KeepOrig"
+            folder.mkdir(parents=True)
+            flac_file = folder / "01 - Track One.flac"
+            subprocess.run(
+                [
+                    cfg.ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-c:a", "flac", str(flac_file),
+                ],
+                check=True,
+            )
+
+            # target_format='flac' skips conversion completely
+            res_skip = convert_downloaded_flacs(
+                [flac_file],
+                target_format="flac",
+                ffmpeg_bin=cfg.ffmpeg_bin,
+                ffprobe_bin=cfg.ffprobe_bin,
+                delete_original=True,
+            )
+            self.assertEqual(res_skip, (0, 0))
+            self.assertTrue(flac_file.is_file())
+            self.assertFalse(flac_file.with_suffix(".mp3").exists())
+
+            # delete_original=False converts to MP3 320 while keeping the original .flac
+            res_keep = convert_downloaded_flacs(
+                [flac_file],
+                target_format="mp3",
+                ffmpeg_bin=cfg.ffmpeg_bin,
+                ffprobe_bin=cfg.ffprobe_bin,
+                delete_original=False,
+            )
+            self.assertEqual(res_keep, (1, 0))
+            self.assertTrue(flac_file.is_file())
+            self.assertTrue(flac_file.with_suffix(".mp3").is_file())
 
 
 if __name__ == "__main__":

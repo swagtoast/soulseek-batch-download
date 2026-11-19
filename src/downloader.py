@@ -97,10 +97,11 @@ def _platform_extra_args(export: CollectionExport) -> list[str]:
 def _maybe_convert(
     cfg: PipelineConfig,
     convert_format: str,
+    delete_original: bool,
     before_files: dict[Path, float],
 ) -> None:
     fmt = normalize_convert_format(convert_format)
-    if fmt == "none":
+    if fmt == "flac":
         return
     new_audio = _new_audio_files(before_files, cfg.output_dir)
     if not new_audio:
@@ -110,6 +111,7 @@ def _maybe_convert(
         target_format=fmt,
         ffmpeg_bin=cfg.ffmpeg_bin,
         ffprobe_bin=cfg.ffprobe_bin,
+        delete_original=delete_original,
     )
 
 
@@ -258,6 +260,7 @@ def download_collection(
     force_mode: str = "auto",
     convert_format: str | None = None,
     convert_aiff: bool | None = None,
+    delete_original: bool = True,
     open_finder: bool = True,
 ) -> int:
     """Export tracklist CSV, run Sockseek natively without Docker, convert FLAC if requested, and open Finder."""
@@ -286,7 +289,7 @@ def download_collection(
     effective_convert = (
         normalize_convert_format(convert_format)
         if convert_format is not None
-        else (normalize_convert_format(convert_aiff) if convert_aiff is not None else "none")
+        else (normalize_convert_format(convert_aiff) if convert_aiff is not None else "flac")
     )
 
     session_before_files = _snapshot_files(cfg.output_dir)
@@ -297,7 +300,7 @@ def download_collection(
         cfg=cfg,
         session_before_files=session_before_files,
     )
-    _maybe_convert(cfg, effective_convert, session_before_files)
+    _maybe_convert(cfg, effective_convert, delete_original, session_before_files)
     if open_finder:
         _reveal_after_download(cfg, session_before_files, preferred_dir)
     return rc

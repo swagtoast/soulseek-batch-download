@@ -10,19 +10,19 @@ import shutil
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-VALID_CONVERT_FORMATS = ("none", "aiff", "mp3")
+VALID_CONVERT_FORMATS = ("flac", "aiff", "mp3")
 
 
 def normalize_convert_format(value: object) -> str:
-    """Normalize a conversion format setting into 'none', 'aiff', or 'mp3'."""
+    """Normalize a target format setting into 'flac' (no conversion), 'aiff', or 'mp3'."""
     if isinstance(value, bool):
-        return "aiff" if value else "none"
-    s = str(value or "").strip().lower()
+        return "aiff" if value else "flac"
+    s = str(value or "").strip().lower().lstrip(".")
     if s in {"aiff", "aif", "true", "1", "yes"}:
         return "aiff"
     if s in {"mp3", "mp3_320", "mp3-320", "320"}:
         return "mp3"
-    return "none"
+    return "flac"
 
 
 @dataclass
@@ -53,6 +53,7 @@ class PipelineConfig:
     spotify_client_id: str
     spotify_client_secret: str
     convert_format: str
+    delete_original: bool = True
 
     @property
     def convert_flac_to_aiff(self) -> bool:
@@ -177,20 +178,31 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
             if "convert_format" in raw
             else normalize_convert_format(raw.get("convert_flac_to_aiff", False))
         ),
+        delete_original=bool(raw.get("delete_original", True)),
     )
 
 
-def save_convert_preference(cfg: PipelineConfig, target_format: str | bool) -> None:
-    """Persist the FLAC conversion format ('none', 'aiff', or 'mp3') cleanly in config/pipeline.json."""
+def save_convert_preference(
+    cfg: PipelineConfig,
+    target_format: str | bool,
+    delete_original: bool | None = None,
+) -> None:
+    """Persist target format ('flac', 'aiff', or 'mp3') and delete_original flag in config/pipeline.json."""
     if not cfg.config_file.is_file():
         return
     fmt = normalize_convert_format(target_format)
     try:
         raw = json.loads(cfg.config_file.read_text(encoding="utf-8"))
-        if raw.get("convert_format") == fmt and raw.get("convert_flac_to_aiff") == (fmt == "aiff"):
+        del_orig = bool(raw.get("delete_original", True)) if delete_original is None else bool(delete_original)
+        if (
+            raw.get("convert_format") == fmt
+            and raw.get("convert_flac_to_aiff") == (fmt == "aiff")
+            and raw.get("delete_original") == del_orig
+        ):
             return
         raw["convert_format"] = fmt
         raw["convert_flac_to_aiff"] = fmt == "aiff"
+        raw["delete_original"] = del_orig
         cfg.config_file.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     except OSError:
         pass
