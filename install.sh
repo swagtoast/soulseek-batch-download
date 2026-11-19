@@ -136,9 +136,9 @@ else
     chmod +x "$INSTALL_DIR/bin/ffprobe"
 fi
 
-# Optionally compile native Swift UI helpers with a strict timeout; src/slsk_*.js JXA runs natively with zero delay.
+# Optionally compile native Swift UI helpers with a strict timeout; StandardAdditions AppleScript fallback is instant on all Macs.
 if xcode-select -p >/dev/null 2>&1 && command -v swiftc >/dev/null 2>&1; then
-    echo "      Compilo finestra nativa macOS (max 35s, altrimenti usa modalità rapida JXA)..."
+    echo "      Compilo finestra nativa macOS (max 30s, altrimenti usa finestre native macOS istantanee)..."
     INSTALL_DIR="$INSTALL_DIR" "$PYTHON_BIN" - << 'PYEOF' || true
 import os, subprocess
 from pathlib import Path
@@ -150,7 +150,7 @@ for src_name, bin_name in (("slsk_prompt.swift", "slsk-prompt"), ("slsk_setup.sw
             ["swiftc", "-Onone", str(root / "src" / src_name), "-o", str(out_bin)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=35,
+            timeout=30,
             check=False,
         )
         if res.returncode == 0 and out_bin.is_file():
@@ -159,7 +159,7 @@ for src_name, bin_name in (("slsk_prompt.swift", "slsk-prompt"), ("slsk_setup.sw
             out_bin.unlink(missing_ok=True)
     except subprocess.TimeoutExpired:
         out_bin.unlink(missing_ok=True)
-        print("      Compilazione Swift lenta su questo Mac: uso la finestra nativa JXA (istantanea).")
+        print("      Compilazione Swift lenta su questo Mac: uso le finestre native macOS (istantanee).")
         break
 PYEOF
 fi

@@ -77,7 +77,93 @@ def _can_use_gui_prompt(cfg: PipelineConfig, no_gui: bool) -> bool:
         return False
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
         return True
-    return sys.platform == "darwin" and cfg.prompt_js.is_file() and Path("/usr/bin/osascript").is_file()
+    return sys.platform == "darwin" and Path("/usr/bin/osascript").is_file()
+
+
+def _as_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+
+def _run_osascript(script: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["/usr/bin/osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def _clipboard_music_url() -> str:
+    try:
+        proc = subprocess.run(["/usr/bin/pbpaste"], capture_output=True, text=True, check=False)
+        clip = (proc.stdout or "").strip()
+        lower = clip.lower()
+        if any(tok in lower for tok in ("spotify.com/", "spotify.link/", "spoti.fi/", "spotify:", "youtube.com/", "youtu.be/")):
+            return clip
+    except OSError:
+        pass
+    return ""
+
+
+def _prompt_with_applescript(
+    url: str | None,
+    default_format: str,
+    default_delete: bool = True,
+    label: str | None = None,
+) -> tuple[bool, str, str, bool]:
+    """Universal zero-CPU StandardAdditions macOS dialogs (works on all Intel & Apple Silicon Macs)."""
+    final_url = (url or "").strip()
+    if not final_url:
+        clip = _as_escape(_clipboard_music_url())
+        rc, entered = _run_osascript(
+            f'set r to display dialog "Incolla un URL Spotify o YouTube (playlist, album o video full album):" '
+            f'with title "Soulseek Batch Download" default answer "{clip}" '
+            f'buttons {{"Annulla", "Avanti"}} default button "Avanti"\n'
+            f'return text returned of r'
+        )
+        if rc != 0 or not entered.strip():
+            return (False, "", default_format, default_delete)
+        final_url = entered.strip()
+
+    items = [
+        ".flac (lossless)",
+        ".aiff (PCM 24-bit lossless)",
+        ".mp3 (320 kbps)",
+    ]
+    fmt_map = {items[0]: "flac", items[1]: "aiff", items[2]: "mp3"}
+    default_item = {"flac": items[0], "aiff": items[1], "mp3": items[2]}.get(
+        normalize_convert_format(default_format), items[0]
+    )
+    heading = _as_escape(label or "formato")
+    prompt_text = f"{heading} — formato" if label else "formato"
+    rc, chosen_label = _run_osascript(
+        'set opts to {".flac (lossless)", ".aiff (PCM 24-bit lossless)", ".mp3 (320 kbps)"}\n'
+        f'set c to choose from list opts with title "Soulseek Batch Download" '
+        f'with prompt "{prompt_text}" default items {{"{default_item}"}} '
+        f'OK button name "Scarica" cancel button name "Annulla"\n'
+        'if c is false then error number -128\n'
+        'return item 1 of c'
+    )
+    if rc != 0 or not chosen_label:
+        return (False, final_url, default_format, default_delete)
+    chosen_fmt = fmt_map.get(chosen_label, "flac")
+
+    chosen_delete = default_delete
+    if chosen_fmt in {"aiff", "mp3"}:
+        def_btn = "Elimina file originale" if default_delete else "Mantieni originale"
+        rc, btn = _run_osascript(
+            'set r to display dialog "Eliminare il file .flac originale dopo la conversione?" '
+            'with title "Soulseek Batch Download" '
+            f'buttons {{"Annulla", "Mantieni originale", "Elimina file originale"}} '
+            f'default button "{def_btn}"\n'
+            'return button returned of r'
+        )
+        if rc != 0:
+            return (False, final_url, chosen_fmt, default_delete)
+        chosen_delete = btn == "Elimina file originale"
+
+    return (True, final_url, chosen_fmt, chosen_delete)
 
 
 def _prompt_with_gui(
@@ -87,37 +173,37 @@ def _prompt_with_gui(
     default_delete: bool = True,
     label: str | None = None,
 ) -> tuple[bool, str, str, bool] | None:
-    extra_args = [
-        "--default-format",
-        normalize_convert_format(default_format),
-        "--default-delete",
-        "true" if default_delete else "false",
-    ]
-    if url:
-        extra_args.extend(["--url", url])
-    if label:
-        extra_args.extend(["--label", label])
-
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
-        cmd = [str(cfg.prompt_bin), *extra_args]
-    else:
-        cmd = ["/usr/bin/osascript", "-l", "JavaScript", str(cfg.prompt_js), *extra_args]
+        extra_args = [
+            "--default-format",
+            normalize_convert_format(default_format),
+            "--default-delete",
+            "true" if default_delete else "false",
+        ]
+        if url:
+            extra_args.extend(["--url", url])
+        if label:
+            extra_args.extend(["--label", label])
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        return None if proc.returncode != 0 else (False, "", default_format, default_delete)
-    try:
-        data = json.loads(raw)
-        raw_fmt = data.get("convert_format", data.get("convert_flac_to_aiff", default_format))
-        return (
-            bool(data.get("confirmed")),
-            str(data.get("url") or ""),
-            normalize_convert_format(raw_fmt),
-            bool(data.get("delete_original", default_delete)),
-        )
-    except json.JSONDecodeError:
-        return None
+        proc = subprocess.run([str(cfg.prompt_bin), *extra_args], capture_output=True, text=True, check=False)
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            return None if proc.returncode != 0 else (False, "", default_format, default_delete)
+        try:
+            data = json.loads(raw)
+            raw_fmt = data.get("convert_format", data.get("convert_flac_to_aiff", default_format))
+            return (
+                bool(data.get("confirmed")),
+                str(data.get("url") or ""),
+                normalize_convert_format(raw_fmt),
+                bool(data.get("delete_original", default_delete)),
+            )
+        except json.JSONDecodeError:
+            return None
+
+    if sys.platform == "darwin" and Path("/usr/bin/osascript").is_file():
+        return _prompt_with_applescript(url, default_format, default_delete=default_delete, label=label)
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:

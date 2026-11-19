@@ -113,37 +113,133 @@ def _can_use_gui(no_gui: bool) -> bool:
     return True
 
 
+def _applescript_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+
+def _run_osascript(script: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["/usr/bin/osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
+    """100% native macOS StandardAdditions dialogs (works on all Intel/Apple Silicon macOS, 0% CPU)."""
+    if not Path("/usr/bin/osascript").is_file():
+        return None
+
+    esc_user = _applescript_escape(existing_user)
+    rc, username = _run_osascript(
+        f'set r to display dialog "Benvenuto! Inserisci il tuo Username Soulseek (chiesto solo al primo avvio):" '
+        f'with title "Soulseek Batch Download — Configurazione iniziale" '
+        f'default answer "{esc_user}" buttons {{"Annulla", "Avanti"}} default button "Avanti"\n'
+        f'return text returned of r'
+    )
+    if rc != 0:
+        return {"confirmed": False}
+    username = username.strip()
+    if not username:
+        return {"confirmed": False}
+
+    rc, password = _run_osascript(
+        'set r to display dialog "Inserisci la tua Password Soulseek:" '
+        'with title "Soulseek Batch Download — Configurazione iniziale" '
+        'default answer "" with hidden answer buttons {"Annulla", "Avanti"} default button "Avanti"\n'
+        'return text returned of r'
+    )
+    if rc != 0 or not password:
+        return {"confirmed": False}
+
+    default_parent = cfg.output_dir if cfg.output_dir.is_dir() else (Path.home() / "Music")
+    if not default_parent.is_dir():
+        default_parent = Path.home()
+    esc_dir = _applescript_escape(str(default_parent))
+    rc, chosen_dir = _run_osascript(
+        f'set f to choose folder with prompt "Scegli la cartella di download per Soulseek:" '
+        f'default location (POSIX file "{esc_dir}")\n'
+        f'return POSIX path of f'
+    )
+    if rc != 0 or not chosen_dir:
+        return {"confirmed": False}
+    chosen_dir = chosen_dir.rstrip("/") or str(cfg.output_dir)
+
+    items = [
+        ".flac (lossless)",
+        ".aiff (PCM 24-bit lossless)",
+        ".mp3 (320 kbps)",
+    ]
+    fmt_map = {
+        items[0]: "flac",
+        items[1]: "aiff",
+        items[2]: "mp3",
+    }
+    default_item = {"flac": items[0], "aiff": items[1], "mp3": items[2]}.get(cfg.convert_format, items[0])
+    rc, chosen_fmt_label = _run_osascript(
+        'set opts to {".flac (lossless)", ".aiff (PCM 24-bit lossless)", ".mp3 (320 kbps)"}\n'
+        f'set c to choose from list opts with title "Soulseek Batch Download" '
+        f'with prompt "formato" default items {{"{default_item}"}} '
+        f'OK button name "Avanti" cancel button name "Annulla"\n'
+        'if c is false then error number -128\n'
+        'return item 1 of c'
+    )
+    if rc != 0 or not chosen_fmt_label:
+        return {"confirmed": False}
+    chosen_fmt = fmt_map.get(chosen_fmt_label, "flac")
+
+    delete_orig = cfg.delete_original
+    if chosen_fmt in {"aiff", "mp3"}:
+        def_btn = "Elimina file originale" if delete_orig else "Mantieni originale"
+        rc, btn = _run_osascript(
+            'set r to display dialog "Vuoi eliminare il file .flac originale dopo la conversione?" '
+            'with title "Soulseek Batch Download — formato" '
+            f'buttons {{"Annulla", "Mantieni originale", "Elimina file originale"}} '
+            f'default button "{def_btn}"\n'
+            'return button returned of r'
+        )
+        if rc != 0:
+            return {"confirmed": False}
+        delete_orig = btn == "Elimina file originale"
+
+    return {
+        "confirmed": True,
+        "username": username,
+        "password": password,
+        "output_dir": chosen_dir,
+        "convert_format": chosen_fmt,
+        "delete_original": delete_orig,
+    }
+
+
 def _run_gui_setup(cfg: PipelineConfig) -> dict | None:
     existing_user, _ = _read_sockseek_creds(cfg.sockseek_conf)
     if existing_user in _PLACEHOLDER_VALUES:
         existing_user = ""
 
-    extra_args = [
-        "--default-dir",
-        str(cfg.output_dir),
-        "--default-format",
-        cfg.convert_format,
-        "--default-delete",
-        "true" if cfg.delete_original else "false",
-    ]
-    if existing_user:
-        extra_args.extend(["--default-user", existing_user])
-
     if cfg.setup_bin.is_file() and os.access(cfg.setup_bin, os.X_OK):
-        cmd = [str(cfg.setup_bin), *extra_args]
-    elif cfg.setup_js.is_file() and Path("/usr/bin/osascript").is_file():
-        cmd = ["/usr/bin/osascript", "-l", "JavaScript", str(cfg.setup_js), *extra_args]
-    else:
-        return None
+        extra_args = [
+            "--default-dir",
+            str(cfg.output_dir),
+            "--default-format",
+            cfg.convert_format,
+            "--default-delete",
+            "true" if cfg.delete_original else "false",
+        ]
+        if existing_user:
+            extra_args.extend(["--default-user", existing_user])
+        proc = subprocess.run([str(cfg.setup_bin), *extra_args], capture_output=True, text=True, check=False)
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            return {"confirmed": False}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        return {"confirmed": False}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    return _run_applescript_setup(cfg, existing_user)
 
 
 def _run_terminal_setup(cfg: PipelineConfig) -> dict:
