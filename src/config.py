@@ -24,6 +24,11 @@ class PipelineConfig:
     sockseek_conf: Path
     prompt_bin: Path
     prompt_js: Path
+    setup_bin: Path
+    setup_js: Path
+    mlx_python: str
+    mlx_base_model: str
+    mlx_adapter_dir: Path
     yt_dlp_bin: str
     deno_bin: str
     ffmpeg_bin: str
@@ -73,6 +78,32 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
     sockseek_conf = Path(raw.get("sockseek_conf") or (PROJECT_ROOT / "config" / "sockseek.conf")).expanduser()
     prompt_bin = Path(raw.get("prompt_path") or (PROJECT_ROOT / "bin" / "slsk-prompt")).expanduser()
     prompt_js = PROJECT_ROOT / "src" / "slsk_prompt.js"
+    setup_bin = Path(raw.get("setup_path") or (PROJECT_ROOT / "bin" / "slsk-setup")).expanduser()
+    setup_js = PROJECT_ROOT / "src" / "slsk_setup.js"
+
+    default_mlx_py = Path.home() / "llm_wiki_agent" / ".venv" / "bin" / "python"
+    mlx_python = str(
+        Path(
+            os.environ.get("SLSK_MLX_PYTHON")
+            or raw.get("mlx_python")
+            or (str(default_mlx_py) if default_mlx_py.is_file() else "")
+        ).expanduser()
+    ) if (os.environ.get("SLSK_MLX_PYTHON") or raw.get("mlx_python") or default_mlx_py.is_file()) else ""
+
+    default_mlx_model = Path.home() / "llm_wiki_agent" / "models" / "MiniCPM5-2B-MLX"
+    mlx_base_model = str(
+        Path(
+            os.environ.get("SLSK_MLX_MODEL")
+            or raw.get("mlx_base_model")
+            or (str(default_mlx_model) if default_mlx_model.is_dir() else "")
+        ).expanduser()
+    ) if (os.environ.get("SLSK_MLX_MODEL") or raw.get("mlx_base_model") or default_mlx_model.is_dir()) else ""
+
+    mlx_adapter_dir = Path(
+        os.environ.get("SLSK_MLX_ADAPTER")
+        or raw.get("mlx_adapter_dir")
+        or (PROJECT_ROOT / "models" / "minicpm5_slsk_lora")
+    ).expanduser()
 
     yt_dlp_bin = _resolve_binary(
         str(raw.get("yt_dlp_path", "")),
@@ -109,6 +140,11 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         sockseek_conf=sockseek_conf,
         prompt_bin=prompt_bin,
         prompt_js=prompt_js,
+        setup_bin=setup_bin,
+        setup_js=setup_js,
+        mlx_python=mlx_python,
+        mlx_base_model=mlx_base_model,
+        mlx_adapter_dir=mlx_adapter_dir,
         yt_dlp_bin=yt_dlp_bin,
         deno_bin=deno_bin,
         ffmpeg_bin=ffmpeg_bin,

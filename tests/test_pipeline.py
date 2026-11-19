@@ -25,6 +25,7 @@ from llm_formatter import (
     parse_track_heuristic,
 )
 from models import CollectionExport, Track
+from setup_ui import ensure_configured, is_first_run_needed, write_setup_configs
 from url_utils import classify_url, extract_url_from_text, sanitize_filename
 from youtube_extractor import extract_youtube
 
@@ -134,13 +135,44 @@ class LlmFallbackAndYouTubeExtractorTests(unittest.TestCase):
             "description": "",
         }
         with patch("youtube_extractor._run_yt_dlp_json", return_value=single_meta):
-            with patch("llm_formatter.OllamaSession") as mock_session_cls:
-                inst = mock_session_cls.return_value.__enter__.return_value
-                inst.available = False
-                export = extract_youtube(parsed, cfg)
+            with patch("llm_formatter._try_mlx_batch", return_value=None):
+                with patch("llm_formatter.OllamaSession") as mock_session_cls:
+                    inst = mock_session_cls.return_value.__enter__.return_value
+                    inst.available = False
+                    export = extract_youtube(parsed, cfg)
         self.assertEqual(export.kind, "single_track")
         self.assertEqual(export.tracks[0].artist, "Cymande")
         self.assertEqual(export.tracks[0].title, "Zion I")
+
+    def test_format_playlist_prefers_mlx_minicpm_over_ollama(self) -> None:
+        cfg = load_config()
+        raw_entries = [
+            {"title": "🟡 Milk & Sugar - Higher & Higher (Original Mix) 128 BPM *2000*", "channel": "", "duration": 548},
+        ]
+        mlx_reply = [
+            {
+                "is_album": False,
+                "album_artist": "",
+                "album_title": "",
+                "tracks": [{"idx": 0, "artist": "Milk & Sugar", "title": "Higher & Higher (Original Mix)"}],
+            }
+        ]
+        with patch("llm_formatter._try_mlx_batch", return_value=mlx_reply) as mock_mlx:
+            with patch("llm_formatter.OllamaSession") as mock_ollama:
+                export = format_youtube_playlist_with_llm(
+                    cfg=cfg,
+                    playlist_title="pnh26",
+                    playlist_uploader="User",
+                    playlist_id="PLGyZUTYD4yVA",
+                    raw_entries=raw_entries,
+                    source_url="https://www.youtube.com/playlist?list=PLGyZUTYD4yVA",
+                )
+        self.assertEqual(export.kind, "playlist")
+        self.assertTrue(export.used_llm)
+        self.assertEqual(export.tracks[0].artist, "Milk & Sugar")
+        self.assertEqual(export.tracks[0].title, "Higher & Higher (Original Mix)")
+        mock_mlx.assert_called_once()
+        mock_ollama.assert_not_called()
 
     def test_format_playlist_with_mocked_ollama(self) -> None:
         cfg = load_config()
@@ -157,26 +189,27 @@ class LlmFallbackAndYouTubeExtractorTests(unittest.TestCase):
                 {"idx": 1, "artist": "Winx", "title": "Don't Laugh (Original Live Raw Mix)"},
             ],
         }
-        with patch("llm_formatter.OllamaSession") as mock_session_cls:
-            inst = mock_session_cls.return_value.__enter__.return_value
-            inst.available = True
-            inst.model = "qwen2.5:14b"
-            inst.chat_json.return_value = mock_reply
+        with patch("llm_formatter._try_mlx_batch", return_value=None):
+            with patch("llm_formatter.OllamaSession") as mock_session_cls:
+                inst = mock_session_cls.return_value.__enter__.return_value
+                inst.available = True
+                inst.model = "minicpm5-2b:latest"
+                inst.chat_json.return_value = mock_reply
 
-            export = format_youtube_playlist_with_llm(
-                cfg=cfg,
-                playlist_title="Club Cuts",
-                playlist_uploader="User",
-                playlist_id="PL123",
-                raw_entries=raw_entries,
-                source_url="https://www.youtube.com/playlist?list=PL123",
-            )
-            self.assertEqual(export.kind, "playlist")
-            self.assertTrue(export.used_llm)
-            self.assertEqual(export.tracks[0].artist, "Fred again..")
-            self.assertEqual(export.tracks[1].title, "Don't Laugh (Original Live Raw Mix)")
-            inst.chat_json.assert_called_once()
-            self.assertEqual(inst.chat_json.call_args.kwargs["keep_alive"], 0)
+                export = format_youtube_playlist_with_llm(
+                    cfg=cfg,
+                    playlist_title="Club Cuts",
+                    playlist_uploader="User",
+                    playlist_id="PL123",
+                    raw_entries=raw_entries,
+                    source_url="https://www.youtube.com/playlist?list=PL123",
+                )
+                self.assertEqual(export.kind, "playlist")
+                self.assertTrue(export.used_llm)
+                self.assertEqual(export.tracks[0].artist, "Fred again..")
+                self.assertEqual(export.tracks[1].title, "Don't Laugh (Original Live Raw Mix)")
+                inst.chat_json.assert_called_once()
+                self.assertEqual(inst.chat_json.call_args.kwargs["keep_alive"], 0)
 
     def test_format_full_album_video_with_mocked_ollama(self) -> None:
         cfg = load_config()
@@ -201,17 +234,74 @@ class LlmFallbackAndYouTubeExtractorTests(unittest.TestCase):
                 {"artist": "Cymande", "title": "Getting It Back", "duration_sec": 235},
             ],
         }
-        with patch("llm_formatter.OllamaSession") as mock_session_cls:
-            inst = mock_session_cls.return_value.__enter__.return_value
-            inst.available = True
-            inst.model = "qwen2.5:14b"
-            inst.chat_json.return_value = mock_reply
+        with patch("llm_formatter._try_mlx_batch", return_value=None):
+            with patch("llm_formatter.OllamaSession") as mock_session_cls:
+                inst = mock_session_cls.return_value.__enter__.return_value
+                inst.available = True
+                inst.model = "minicpm5-2b:latest"
+                inst.chat_json.return_value = mock_reply
 
-            export = format_youtube_video_with_llm(cfg, meta, "https://www.youtube.com/watch?v=abc")
-            self.assertEqual(export.kind, "album")
-            self.assertEqual(export.artist, "Cymande")
-            self.assertEqual(export.album, "Cymande")
-            self.assertEqual(export.total_tracks, 3)
+                export = format_youtube_video_with_llm(cfg, meta, "https://www.youtube.com/watch?v=abc")
+                self.assertEqual(export.kind, "album")
+                self.assertEqual(export.artist, "Cymande")
+                self.assertEqual(export.album, "Cymande")
+                self.assertEqual(export.total_tracks, 3)
+
+
+class FirstRunSetupTests(unittest.TestCase):
+    def test_first_run_only_prompts_once_and_persists_configs_securely(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.sockseek_conf = root / "config" / "sockseek.conf"
+            cfg.config_file = root / "config" / "pipeline.json"
+            chosen_dir = root / "My Custom Downloads"
+
+            # Before setup: first run IS needed.
+            self.assertTrue(is_first_run_needed(cfg))
+
+            fake_gui = {
+                "confirmed": True,
+                "username": "dj_friend",
+                "password": "secret_password",
+                "output_dir": str(chosen_dir),
+                "convert_flac_to_aiff": True,
+            }
+            with patch("setup_ui._can_use_gui", return_value=True):
+                with patch("setup_ui._run_gui_setup", return_value=fake_gui) as mock_gui:
+                    updated = ensure_configured(cfg)
+
+            self.assertIsNotNone(updated)
+            mock_gui.assert_called_once()
+            self.assertEqual(updated.output_dir, chosen_dir)
+            self.assertTrue(updated.convert_flac_to_aiff)
+            self.assertTrue(chosen_dir.is_dir())
+            self.assertEqual(cfg.sockseek_conf.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(cfg.config_file.stat().st_mode & 0o777, 0o600)
+
+            # Subsequent sessions: first run is NOT needed, zero prompts!
+            updated.sockseek_conf = cfg.sockseek_conf
+            self.assertFalse(is_first_run_needed(updated))
+            with patch("setup_ui._run_gui_setup") as mock_gui_again:
+                with patch("setup_ui._run_terminal_setup") as mock_term_again:
+                    res2 = ensure_configured(updated)
+            self.assertIsNotNone(res2)
+            mock_gui_again.assert_not_called()
+            mock_term_again.assert_not_called()
+
+    def test_placeholder_credentials_trigger_first_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.sockseek_conf = root / "config" / "sockseek.conf"
+            cfg.sockseek_conf.parent.mkdir(parents=True, exist_ok=True)
+            cfg.sockseek_conf.write_text(
+                "username = YOUR_SOULSEEK_USERNAME\npassword = YOUR_SOULSEEK_PASSWORD\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(is_first_run_needed(cfg))
+            write_setup_configs(cfg, "real_user", "real_pass", root / "Music", False)
+            self.assertFalse(is_first_run_needed(cfg))
 
 
 class DownloaderAndConverterTests(unittest.TestCase):

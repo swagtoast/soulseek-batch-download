@@ -1,4 +1,5 @@
 bin/
+models/
 runtime/
 lists/
 config/sockseek.conf

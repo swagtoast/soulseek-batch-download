@@ -1,8 +1,10 @@
-"""On-demand lightweight Ollama formatter for YouTube playlists and full albums."""
+"""On-demand lightweight LLM formatter (fine-tuned MiniCPM5-2B MLX + Ollama fallback) for YouTube."""
 
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 import re
 import subprocess
 import time
@@ -15,6 +17,8 @@ from url_utils import sanitize_filename
 
 
 _PREFERRED_MODELS = (
+    "minicpm5-2b:latest",
+    "minicpm5-2b",
     "qwen2.5:3b",
     "qwen2.5:1.5b",
     "qwen3:1.7b",
@@ -23,6 +27,45 @@ _PREFERRED_MODELS = (
     "gemma3:4b",
     "qwen2.5:7b",
     "qwen2.5:14b",
+)
+
+PLAYLIST_SYSTEM_PROMPT = (
+    "You normalize YouTube music playlist items into clean Soulseek search metadata.\n"
+    "Rules:\n"
+    "- Remove emojis, BPM tags ('128 BPM'), release years ('(1980)', '*2000*', '[1974]'), track numbers ('01.', 'A1.'), "
+    "'[Official Video]', '(Official Audio)', '[HD]', '[HQ]', '(Lyrics)', '[Visualizer]', '[Vinyl Rip]', "
+    "country brackets like '[Ethiopia]', and trailing punctuation like trailing periods.\n"
+    "- Preserve musically important qualifiers: '(Original Mix)', '(Extended Mix)', '(... Mix)', '(... Edit)', "
+    "'(... Remix)', '(... Interpretation)', '(Live)', '(Acoustic)', '(Instrumental)', '(feat. ...)'.\n"
+    "- Handle no-space hyphens ('Artist-Title'), extra spaces around hyphens, 'Artist feat. Guest - Title', "
+    "and reversed 'Title - Artist' entries.\n"
+    "- CRITICAL: On YouTube, `channel` is very often a collector/archive uploader rather than the musical artist. "
+    "Use `yt_artist`/`desc` or the video title when present. Only use `channel` as artist if it ends in '- Topic'/'VEVO' "
+    "or clearly IS the musician. If the artist is genuinely unknown, set \"artist\": \"\".\n"
+    "- Determine if the entire playlist is a single studio album/EP (`is_album`, `album_artist`, `album_title`). "
+    "A 'Best Of', 'Greatest Hits', or mixed compilation playlist is NOT a single studio album (`is_album`: false).\n"
+    "- Output strictly valid JSON matching:\n"
+    '{"is_album": false, "album_artist": "", "album_title": "", '
+    '"tracks": [{"idx": 0, "artist": "Artist", "title": "Song Title"}]}.'
+)
+
+VIDEO_SYSTEM_PROMPT = (
+    "Analyze a YouTube video (likely a Full Album upload or multi-track release).\n"
+    "Determine:\n"
+    "1. is_full_album (boolean): true if it is an album/EP upload, false if a single song.\n"
+    "2. album_artist and album_title (clean, without '[Full Album]', '(1972)', 'HQ', etc.).\n"
+    "3. tracks: extract clean individual tracks from Chapters or Description if listed, "
+    "including duration_sec (integer or null) when timestamps/durations are provided.\n"
+    "Output strictly valid JSON:\n"
+    '{"is_full_album": true, "album_artist": "...", "album_title": "...", '
+    '"tracks": [{"artist": "...", "title": "...", "duration_sec": 210}]}'
+)
+
+SINGLE_VIDEO_SYSTEM_PROMPT = (
+    "Extract clean Artist and Song Title from a single YouTube music video.\n"
+    "Remove '[Official Video]', '(Official Audio)', '(Lyrics)', '[HD]', '- Topic', '[Vinyl Rip]'. "
+    "Keep remixes/featuring. Do not treat archive channel uploaders as the artist; leave artist \"\" if unknown.\n"
+    'Output strictly JSON: {"artist": "...", "title": "..."}'
 )
 
 _GARBAGE_BRACKETS_RE = re.compile(
@@ -230,6 +273,119 @@ class OllamaSession:
         return _parse_llm_json(content)
 
 
+def _mlx_is_available(cfg: PipelineConfig) -> bool:
+    if os.environ.get("SLSK_DISABLE_MLX") == "1":
+        return False
+    if not cfg.mlx_python or not cfg.mlx_base_model:
+        return False
+    worker = cfg.project_root / "src" / "mlx_worker.py"
+    return (
+        Path(cfg.mlx_python).is_file()
+        and os.access(cfg.mlx_python, os.X_OK)
+        and Path(cfg.mlx_base_model).is_dir()
+        and worker.is_file()
+    )
+
+
+def _try_mlx_batch(
+    cfg: PipelineConfig,
+    requests: list[dict[str, str]],
+    max_tokens: int = 1500,
+) -> list[dict | None] | None:
+    """Run one-shot MLX MiniCPM5-2B (+ LoRA adapter if present) inference and exit to keep 0 MB idle."""
+    if not _mlx_is_available(cfg) or not requests:
+        return None
+    worker = cfg.project_root / "src" / "mlx_worker.py"
+    adapter_dir = cfg.mlx_adapter_dir
+    has_adapter = (adapter_dir / "adapters.safetensors").is_file()
+    adapter_label = " + LoRA" if has_adapter else ""
+    print(f"[LLM] Formattazione YouTube con MiniCPM5-2B-MLX{adapter_label} (Apple Silicon Metal)...", flush=True)
+
+    payload = {
+        "model": cfg.mlx_base_model,
+        "adapter": str(adapter_dir) if has_adapter else "",
+        "max_tokens": max_tokens,
+        "requests": requests,
+    }
+    try:
+        proc = subprocess.run(
+            [cfg.mlx_python, str(worker)],
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            timeout=max(90, 60 * len(requests)),
+            check=False,
+        )
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip().splitlines()
+            print(f"[LLM] Avviso MLX: {err[-1] if err else proc.returncode} (provo fallback)")
+            return None
+        parsed_stdout = _parse_llm_json(proc.stdout)
+        raw_outputs = parsed_stdout.get("outputs")
+        if not isinstance(raw_outputs, list) or len(raw_outputs) != len(requests):
+            return None
+        results: list[dict | None] = []
+        for raw_out in raw_outputs:
+            try:
+                results.append(_parse_llm_json(str(raw_out)))
+            except Exception as exc:
+                print(f"[LLM] Avviso parsing JSON MLX: {exc}")
+                results.append(None)
+        return results
+    except Exception as exc:
+        print(f"[LLM] Avviso MLX: {exc} (provo fallback)")
+        return None
+
+
+def _build_playlist_batch_prompts(
+    playlist_title: str,
+    playlist_uploader: str,
+    is_ytm_album_hint: bool,
+    raw_entries: list[dict],
+    batch_size: int,
+) -> tuple[list[list[dict]], list[dict[str, str]]]:
+    chunks: list[list[dict]] = []
+    requests: list[dict[str, str]] = []
+    total_batches = (len(raw_entries) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        start = batch_idx * batch_size
+        chunk = raw_entries[start : start + batch_size]
+        chunks.append(chunk)
+
+        lines = []
+        for offset, item in enumerate(chunk):
+            idx = start + offset
+            dur = item.get("duration")
+            dur_s = str(int(dur)) if isinstance(dur, (int, float)) and dur > 0 else "?"
+            extra = []
+            if item.get("artist_tag"):
+                extra.append(f"yt_artist={item['artist_tag']}")
+            if item.get("track_tag"):
+                extra.append(f"yt_track={item['track_tag']}")
+            if item.get("desc_snippet"):
+                extra.append(f"desc={item['desc_snippet']}")
+            extra_str = (" | " + " | ".join(extra)) if extra else ""
+            lines.append(
+                f"{idx} | title={item.get('title', '')} | channel={item.get('channel', '')} | dur={dur_s}s{extra_str}"
+            )
+
+        classify_hint = ""
+        if batch_idx == 0:
+            classify_hint = (
+                f"Playlist title: {playlist_title!r}\n"
+                f"Playlist uploader: {playlist_uploader!r}\n"
+                f"YouTube Music album ID hint: {is_ytm_album_hint}\n"
+            )
+        requests.append(
+            {
+                "system": PLAYLIST_SYSTEM_PROMPT,
+                "user": classify_hint + "Items:\n" + "\n".join(lines),
+            }
+        )
+    return chunks, requests
+
+
 def format_youtube_playlist_with_llm(
     cfg: PipelineConfig,
     playlist_title: str,
@@ -238,7 +394,7 @@ def format_youtube_playlist_with_llm(
     raw_entries: list[dict],
     source_url: str,
 ) -> CollectionExport:
-    """Format a YouTube playlist (or YouTube album playlist) using on-demand Ollama."""
+    """Format a YouTube playlist (or YouTube album playlist) using fine-tuned MiniCPM5-2B MLX or Ollama."""
     is_ytm_album_hint = playlist_id.startswith("OLAK5uy_") or playlist_id.startswith("MPREb_")
     clean_title_guess = re.sub(r"^\s*Album\s*-\s*", "", playlist_title or "", flags=re.IGNORECASE).strip()
 
@@ -248,139 +404,113 @@ def format_youtube_playlist_with_llm(
     formatted_tracks: list[Track] = []
     used_llm = False
 
-    with OllamaSession(cfg) as llm:
-        if llm.available:
-            print(f"[LLM] Formattazione playlist YouTube con Ollama ({llm.model})...")
-            batch_size = cfg.llm_batch_size
-            total_batches = (len(raw_entries) + batch_size - 1) // batch_size
+    batch_size = cfg.llm_batch_size
+    chunks, requests = _build_playlist_batch_prompts(
+        playlist_title=playlist_title,
+        playlist_uploader=playlist_uploader,
+        is_ytm_album_hint=is_ytm_album_hint,
+        raw_entries=raw_entries,
+        batch_size=batch_size,
+    )
 
-            for batch_idx in range(total_batches):
-                if total_batches > 1:
-                    print(f"[LLM] Batch {batch_idx + 1}/{total_batches}...", flush=True)
-                start = batch_idx * batch_size
-                chunk = raw_entries[start : start + batch_size]
-                is_last = batch_idx == total_batches - 1
-                keep_alive: str | int = 0 if is_last else "30s"
+    batch_responses: list[dict | None] | None = _try_mlx_batch(cfg, requests, max_tokens=1600)
 
-                lines = []
-                for offset, item in enumerate(chunk):
-                    idx = start + offset
-                    dur = item.get("duration")
-                    dur_s = str(int(dur)) if isinstance(dur, (int, float)) and dur > 0 else "?"
-                    extra = []
-                    if item.get("artist_tag"):
-                        extra.append(f"yt_artist={item['artist_tag']}")
-                    if item.get("track_tag"):
-                        extra.append(f"yt_track={item['track_tag']}")
-                    if item.get("desc_snippet"):
-                        extra.append(f"desc={item['desc_snippet']}")
-                    extra_str = (" | " + " | ".join(extra)) if extra else ""
-                    lines.append(
-                        f"{idx} | title={item.get('title', '')} | channel={item.get('channel', '')} | dur={dur_s}s{extra_str}"
-                    )
+    if batch_responses is None:
+        with OllamaSession(cfg) as llm:
+            if llm.available:
+                print(f"[LLM] Formattazione playlist YouTube con Ollama ({llm.model})...")
+                batch_responses = []
+                total_batches = len(requests)
+                for batch_idx, req in enumerate(requests):
+                    if total_batches > 1:
+                        print(f"[LLM] Batch {batch_idx + 1}/{total_batches}...", flush=True)
+                    keep_alive: str | int = 0 if batch_idx == total_batches - 1 else "30s"
+                    try:
+                        batch_responses.append(llm.chat_json(req["system"], req["user"], keep_alive=keep_alive))
+                    except Exception as exc:
+                        print(f"[LLM] Avviso batch {batch_idx + 1}: {exc} (uso fallback locale)")
+                        batch_responses.append(None)
 
-                classify_hint = ""
+    if batch_responses is not None:
+        for batch_idx, (chunk, data) in enumerate(zip(chunks, batch_responses)):
+            start = batch_idx * batch_size
+            parsed_map: dict[int, tuple[str, str]] = {}
+            if isinstance(data, dict):
+                used_llm = True
                 if batch_idx == 0:
-                    classify_hint = (
-                        f"Playlist title: {playlist_title!r}\n"
-                        f"Playlist uploader: {playlist_uploader!r}\n"
-                        f"YouTube Music album ID hint: {is_ytm_album_hint}\n"
-                        "Also determine if this entire playlist is a single full studio album/EP "
-                        "(is_album: true/false, album_artist, album_title).\n"
+                    is_album = bool(data.get("is_album")) or is_ytm_album_hint
+                    album_artist = str(data.get("album_artist") or "").strip()
+                    album_title = str(data.get("album_title") or "").strip()
+                for row in data.get("tracks") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        idx = int(row["idx"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    a = str(row.get("artist") or "").strip()
+                    t = str(row.get("title") or "").strip()
+                    if t:
+                        parsed_map[idx] = (a, t)
+
+            for offset, item in enumerate(chunk):
+                idx = start + offset
+                dur = item.get("duration")
+                dur_sec = int(dur) if isinstance(dur, (int, float)) and dur > 0 else None
+                raw_t = str(item.get("title") or "")
+                uploader = str(item.get("channel") or "")
+                if idx in parsed_map:
+                    a, t = parsed_map[idx]
+                    t = _GARBAGE_BRACKETS_RE.sub("", t).strip()
+                    if not a and item.get("artist_tag"):
+                        a = str(item["artist_tag"])
+                    # Guardrail: if an LLM dropped the title part after ' - ' and returned only the artist as title
+                    if not a and " - " in raw_t and t.lower() == raw_t.split(" - ", 1)[0].strip().lower():
+                        heur = parse_track_heuristic(raw_t, uploader, default_artist=album_artist)
+                        a, t = heur.artist, heur.title
+                    track = Track(
+                        artist=a,
+                        title=t,
+                        album=str(item.get("album_tag") or (album_title if is_album else "")),
+                        duration_sec=dur_sec,
+                        raw_title=raw_t,
+                        uploader=uploader,
                     )
-
-                system_prompt = (
-                    "You normalize YouTube music playlist items into clean Soulseek search metadata.\n"
-                    "Rules:\n"
-                    "- Remove channel spam, track numbers ('01.', '04 -'), '[Official Video]', '(Official Audio)', "
-                    "'[HD]', '(Lyrics)', '[Visualizer]', '[Vinyl Rip]', country/year brackets like '[1974]' or '[Ethiopia]'.\n"
-                    "- Preserve musically important qualifiers: '(Extended Mix)', '(Original Mix)', '(... Remix)', "
-                    "'(Live)', '(feat. ...)', '(Acoustic)', '(Instrumental)'.\n"
-                    "- CRITICAL: On YouTube, `channel` is VERY OFTEN a collector/archive/crate-digger uploader "
-                    "(e.g. 'KaderFunkyman', 'VinylFrontier', 'Boiler Room') rather than the musical artist! "
-                    "Use `yt_artist`/`desc` or the video title when present. Only use `channel` as artist if it ends in "
-                    "'- Topic'/'VEVO' or clearly IS the musician. If the artist is unknown/uncertain, set \"artist\": \"\".\n"
-                    "- Output strictly valid JSON matching:\n"
-                    '{"is_album": false, "album_artist": "", "album_title": "", '
-                    '"tracks": [{"idx": 0, "artist": "Artist", "title": "Song Title"}]}.'
-                )
-                user_prompt = classify_hint + "Items:\n" + "\n".join(lines)
-
-                parsed_map: dict[int, tuple[str, str]] = {}
-                try:
-                    data = llm.chat_json(system_prompt, user_prompt, keep_alive=keep_alive)
-                    used_llm = True
-                    if batch_idx == 0:
-                        is_album = bool(data.get("is_album")) or is_ytm_album_hint
-                        album_artist = str(data.get("album_artist") or "").strip()
-                        album_title = str(data.get("album_title") or "").strip()
-                    for row in data.get("tracks") or []:
-                        if not isinstance(row, dict):
-                            continue
-                        try:
-                            idx = int(row["idx"])
-                        except (KeyError, TypeError, ValueError):
-                            continue
-                        a = str(row.get("artist") or "").strip()
-                        t = str(row.get("title") or "").strip()
-                        if t:
-                            parsed_map[idx] = (a, t)
-                except Exception as exc:
-                    print(f"[LLM] Avviso batch {batch_idx + 1}: {exc} (uso fallback locale)")
-
-                for offset, item in enumerate(chunk):
-                    idx = start + offset
-                    dur = item.get("duration")
-                    dur_sec = int(dur) if isinstance(dur, (int, float)) and dur > 0 else None
-                    raw_t = str(item.get("title") or "")
-                    uploader = str(item.get("channel") or "")
-                    if idx in parsed_map:
-                        a, t = parsed_map[idx]
-                        if not a and item.get("artist_tag"):
-                            a = str(item["artist_tag"])
+                else:
+                    if item.get("artist_tag") and item.get("track_tag"):
                         track = Track(
-                            artist=a,
-                            title=t,
-                            album=str(item.get("album_tag") or (album_title if is_album else "")),
+                            artist=str(item["artist_tag"]),
+                            title=str(item["track_tag"]),
+                            album=str(item.get("album_tag") or ""),
                             duration_sec=dur_sec,
                             raw_title=raw_t,
                             uploader=uploader,
                         )
                     else:
-                        if item.get("artist_tag") and item.get("track_tag"):
-                            track = Track(
-                                artist=str(item["artist_tag"]),
-                                title=str(item["track_tag"]),
-                                album=str(item.get("album_tag") or ""),
-                                duration_sec=dur_sec,
-                                raw_title=raw_t,
-                                uploader=uploader,
-                            )
-                        else:
-                            track = parse_track_heuristic(raw_t, uploader, default_artist=album_artist)
-                            track.duration_sec = dur_sec
-                            if is_album and album_title:
-                                track.album = album_title
-                    formatted_tracks.append(track)
-        else:
-            print("[YouTube] Formattazione tracce con parser locale integrato (Ollama opzionale non rilevato).")
-            is_album = is_ytm_album_hint or bool(_ALBUM_KEYWORDS_RE.search(playlist_title or ""))
-            for item in raw_entries:
-                dur = item.get("duration")
-                dur_sec = int(dur) if isinstance(dur, (int, float)) and dur > 0 else None
-                if item.get("artist_tag") and item.get("track_tag"):
-                    track = Track(
-                        artist=str(item["artist_tag"]),
-                        title=str(item["track_tag"]),
-                        album=str(item.get("album_tag") or ""),
-                        duration_sec=dur_sec,
-                        raw_title=str(item.get("title") or ""),
-                        uploader=str(item.get("channel") or ""),
-                    )
-                else:
-                    track = parse_track_heuristic(str(item.get("title") or ""), str(item.get("channel") or ""))
-                    track.duration_sec = dur_sec
+                        track = parse_track_heuristic(raw_t, uploader, default_artist=album_artist)
+                        track.duration_sec = dur_sec
+                        if is_album and album_title:
+                            track.album = album_title
                 formatted_tracks.append(track)
+    else:
+        print("[YouTube] Formattazione tracce con parser locale integrato (LLM locale non rilevato).")
+        is_album = is_ytm_album_hint or bool(_ALBUM_KEYWORDS_RE.search(playlist_title or ""))
+        for item in raw_entries:
+            dur = item.get("duration")
+            dur_sec = int(dur) if isinstance(dur, (int, float)) and dur > 0 else None
+            if item.get("artist_tag") and item.get("track_tag"):
+                track = Track(
+                    artist=str(item["artist_tag"]),
+                    title=str(item["track_tag"]),
+                    album=str(item.get("album_tag") or ""),
+                    duration_sec=dur_sec,
+                    raw_title=str(item.get("title") or ""),
+                    uploader=str(item.get("channel") or ""),
+                )
+            else:
+                track = parse_track_heuristic(str(item.get("title") or ""), str(item.get("channel") or ""))
+                track.duration_sec = dur_sec
+            formatted_tracks.append(track)
 
     if is_album:
         if not album_artist and formatted_tracks:
@@ -453,128 +583,119 @@ def format_youtube_video_with_llm(
     desc_excerpt_lines = [ln for ln in description.splitlines() if ln.strip()]
     desc_excerpt = "\n".join(desc_excerpt_lines[:80])[:4000]
 
-    with OllamaSession(cfg) as llm:
-        if llm.available:
-            print(f"[LLM] Analisi video YouTube con Ollama ({llm.model})...")
-            if not has_album_signals:
-                system_prompt = (
-                    "Extract clean Artist and Song Title from a single YouTube music video.\n"
-                    "Remove '[Official Video]', '(Official Audio)', '(Lyrics)', '[HD]', '- Topic', '[Vinyl Rip]'. "
-                    "Keep remixes/featuring. Do not treat archive channel uploaders as the artist; leave artist \"\" if unknown.\n"
-                    'Output strictly JSON: {"artist": "...", "title": "..."}'
-                )
-                user_prompt = (
-                    f"Video title: {raw_title}\n"
-                    f"Uploader: {uploader}\n"
-                    f"Metadata artist: {yt_artist}\n"
-                    f"Metadata track: {yt_track}\n"
-                    f"Description snippet: {desc_excerpt[:400]}"
-                )
+    if not has_album_signals:
+        sys_p = SINGLE_VIDEO_SYSTEM_PROMPT
+        usr_p = (
+            f"Video title: {raw_title}\n"
+            f"Uploader: {uploader}\n"
+            f"Metadata artist: {yt_artist}\n"
+            f"Metadata track: {yt_track}\n"
+            f"Description snippet: {desc_excerpt[:400]}"
+        )
+    else:
+        sys_p = VIDEO_SYSTEM_PROMPT
+        usr_p = (
+            f"Video title: {raw_title}\n"
+            f"Uploader: {uploader}\n"
+            f"Total duration: {dur_sec or '?'}s\n"
+            f"Metadata artist/album: {yt_artist} / {yt_album}\n"
+            f"Chapters ({len(chapter_lines)}):\n" + "\n".join(chapter_lines[:60]) + "\n\n"
+            f"Description excerpt:\n{desc_excerpt}"
+        )
+
+    data: dict | None = None
+    mlx_res = _try_mlx_batch(cfg, [{"system": sys_p, "user": usr_p}], max_tokens=1600)
+    if mlx_res and isinstance(mlx_res[0], dict):
+        data = mlx_res[0]
+    else:
+        with OllamaSession(cfg) as llm:
+            if llm.available:
+                print(f"[LLM] Analisi video YouTube con Ollama ({llm.model})...")
                 try:
-                    data = llm.chat_json(system_prompt, user_prompt, keep_alive=0)
-                    artist = str(data.get("artist") or yt_artist or "").strip()
-                    title = str(data.get("title") or "").strip()
-                    if title:
-                        tr = Track(
-                            artist=artist,
-                            title=title,
-                            album=yt_album,
-                            duration_sec=dur_sec,
-                            raw_title=raw_title,
+                    data = llm.chat_json(sys_p, usr_p, keep_alive=0)
+                except Exception as exc:
+                    print(f"[LLM] Avviso video YouTube: {exc} (uso fallback locale)")
+
+    if isinstance(data, dict):
+        if not has_album_signals:
+            artist = str(data.get("artist") or yt_artist or "").strip()
+            title = str(data.get("title") or "").strip()
+            if title:
+                tr = Track(
+                    artist=artist,
+                    title=title,
+                    album=yt_album,
+                    duration_sec=dur_sec,
+                    raw_title=raw_title,
+                    uploader=uploader,
+                )
+                display = f"{artist} - {title}" if artist else title
+                return CollectionExport(
+                    kind="single_track",
+                    name=sanitize_filename(display),
+                    artist=artist,
+                    album=yt_album,
+                    total_tracks=1,
+                    tracks=[tr],
+                    source_url=source_url,
+                    source_platform="youtube",
+                    used_llm=True,
+                )
+        else:
+            is_full_album = bool(data.get("is_full_album"))
+            album_artist = str(data.get("album_artist") or yt_artist or "").strip()
+            album_title = str(data.get("album_title") or yt_album or "").strip()
+            tracks: list[Track] = []
+            for row in data.get("tracks") or []:
+                if not isinstance(row, dict):
+                    continue
+                t = str(row.get("title") or "").strip()
+                a = str(row.get("artist") or album_artist or "").strip()
+                d = row.get("duration_sec")
+                d_int = int(d) if isinstance(d, (int, float)) and d > 0 else None
+                if t:
+                    tracks.append(
+                        Track(
+                            artist=a,
+                            title=t,
+                            album=album_title if is_full_album else "",
+                            duration_sec=d_int,
+                            raw_title=t,
                             uploader=uploader,
                         )
-                        display = f"{artist} - {title}" if artist else title
-                        return CollectionExport(
-                            kind="single_track",
-                            name=sanitize_filename(display),
-                            artist=artist,
-                            album=yt_album,
-                            total_tracks=1,
-                            tracks=[tr],
-                            source_url=source_url,
-                            source_platform="youtube",
-                            used_llm=True,
-                        )
-                except Exception as exc:
-                    print(f"[LLM] Avviso singolo video: {exc} (uso fallback locale)")
-            else:
-                system_prompt = (
-                    "Analyze a YouTube video (likely a Full Album upload or multi-track release).\n"
-                    "Determine:\n"
-                    "1. is_full_album (boolean): true if it is an album/EP upload, false if a single song.\n"
-                    "2. album_artist and album_title (clean, without '[Full Album]', '(1972)', 'HQ', etc.).\n"
-                    "3. tracks: extract clean individual tracks from Chapters or Description if listed, "
-                    "including duration_sec (integer or null) when timestamps/durations are provided.\n"
-                    "Output strictly valid JSON:\n"
-                    '{"is_full_album": true, "album_artist": "...", "album_title": "...", '
-                    '"tracks": [{"artist": "...", "title": "...", "duration_sec": 210}]}'
-                )
-                user_prompt = (
-                    f"Video title: {raw_title}\n"
-                    f"Uploader: {uploader}\n"
-                    f"Total duration: {dur_sec or '?'}s\n"
-                    f"Metadata artist/album: {yt_artist} / {yt_album}\n"
-                    f"Chapters ({len(chapter_lines)}):\n" + "\n".join(chapter_lines[:60]) + "\n\n"
-                    f"Description excerpt:\n{desc_excerpt}"
-                )
-                try:
-                    data = llm.chat_json(system_prompt, user_prompt, keep_alive=0)
-                    is_full_album = bool(data.get("is_full_album"))
-                    album_artist = str(data.get("album_artist") or yt_artist or "").strip()
-                    album_title = str(data.get("album_title") or yt_album or "").strip()
-                    tracks: list[Track] = []
-                    for row in data.get("tracks") or []:
-                        if not isinstance(row, dict):
-                            continue
-                        t = str(row.get("title") or "").strip()
-                        a = str(row.get("artist") or album_artist or "").strip()
-                        d = row.get("duration_sec")
-                        d_int = int(d) if isinstance(d, (int, float)) and d > 0 else None
-                        if t:
-                            tracks.append(
-                                Track(
-                                    artist=a,
-                                    title=t,
-                                    album=album_title if is_full_album else "",
-                                    duration_sec=d_int,
-                                    raw_title=t,
-                                    uploader=uploader,
-                                )
-                            )
+                    )
 
-                    if is_full_album and (album_artist or album_title):
-                        if not tracks and desc_tracks:
-                            tracks = desc_tracks
-                        display = f"{album_artist} - {album_title}" if album_artist and album_title else (album_title or album_artist)
-                        return CollectionExport(
-                            kind="album",
-                            name=sanitize_filename(display, fallback="youtube_album"),
-                            artist=album_artist,
-                            album=album_title,
-                            total_tracks=len(tracks) or None,
-                            tracks=tracks,
-                            source_url=source_url,
-                            source_platform="youtube",
-                            used_llm=True,
-                        )
-                    if tracks:
-                        t0 = tracks[0]
-                        if len(tracks) == 1:
-                            t0.duration_sec = t0.duration_sec or dur_sec
-                            display = f"{t0.artist} - {t0.title}" if t0.artist else t0.title
-                            return CollectionExport(
-                                kind="single_track",
-                                name=sanitize_filename(display),
-                                artist=t0.artist,
-                                album=t0.album,
-                                total_tracks=1,
-                                tracks=[t0],
-                                source_url=source_url,
-                                source_platform="youtube",
-                                used_llm=True,
-                            )
-                except Exception as exc:
-                    print(f"[LLM] Avviso full album video: {exc} (uso fallback locale)")
+            if is_full_album and (album_artist or album_title):
+                if not tracks and desc_tracks:
+                    tracks = desc_tracks
+                display = f"{album_artist} - {album_title}" if album_artist and album_title else (album_title or album_artist)
+                return CollectionExport(
+                    kind="album",
+                    name=sanitize_filename(display, fallback="youtube_album"),
+                    artist=album_artist,
+                    album=album_title,
+                    total_tracks=len(tracks) or None,
+                    tracks=tracks,
+                    source_url=source_url,
+                    source_platform="youtube",
+                    used_llm=True,
+                )
+            if tracks:
+                t0 = tracks[0]
+                if len(tracks) == 1:
+                    t0.duration_sec = t0.duration_sec or dur_sec
+                    display = f"{t0.artist} - {t0.title}" if t0.artist else t0.title
+                    return CollectionExport(
+                        kind="single_track",
+                        name=sanitize_filename(display),
+                        artist=t0.artist,
+                        album=t0.album,
+                        total_tracks=1,
+                        tracks=[t0],
+                        source_url=source_url,
+                        source_platform="youtube",
+                        used_llm=True,
+                    )
 
     # Deterministic fallback
     if has_album_signals:

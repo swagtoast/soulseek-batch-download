@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_SLUG="${SLSK_REPO_SLUG:-swagtoast/soulseek-batch-download}"
 REPO_BRANCH="${SLSK_REPO_BRANCH:-main}"
 INSTALL_DIR="${SLSK_INSTALL_DIR:-$HOME/Applications/Soulseek Batch Download}"
+SERVICES_DIR="${SLSK_SERVICES_DIR:-$HOME/Library/Services}"
 SOCKSEEK_VERSION="3.0.6"
 FFMPEG_RELEASE="b6.1.1"
 PYTHON_STANDALONE_TAG="20261110"
@@ -38,63 +39,17 @@ echo ""
 echo "=========================================="
 echo "  Soulseek Batch Download — Installer Mac"
 echo "=========================================="
-echo "Architettura rilevata: $ARCH"
-echo "Cartella installazione: $INSTALL_DIR"
+echo "Architettura: $ARCH"
+echo "Installazione in: $INSTALL_DIR"
 echo ""
 
-# Read credentials from /dev/tty so both `bash <(curl ...)` and `curl ... | bash` work.
-SLSK_USER="${SLSK_USER:-}"
-SLSK_PASS="${SLSK_PASS:-}"
-DOWNLOAD_DIR="${SLSK_DOWNLOAD_DIR:-}"
-DEFAULT_AIFF="${SLSK_DEFAULT_AIFF:-}"
-
-if [ -z "$SLSK_USER" ]; then
-    while true; do
-        printf "Username Soulseek: " >/dev/tty
-        IFS= read -r SLSK_USER </dev/tty
-        SLSK_USER="$(printf '%s' "$SLSK_USER" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        [ -n "$SLSK_USER" ] && break
-        echo "Inserisci un username valido." >/dev/tty
-    done
-fi
-
-if [ -z "$SLSK_PASS" ]; then
-    while true; do
-        printf "Password Soulseek (nascosta): " >/dev/tty
-        IFS= read -rs SLSK_PASS </dev/tty
-        printf "\n" >/dev/tty
-        [ -n "$SLSK_PASS" ] && break
-        echo "Inserisci una password valida." >/dev/tty
-    done
-fi
-
-if [ -z "$DOWNLOAD_DIR" ]; then
-    printf "Cartella download [Invio per ~/Music/Soulseek Downloads]: " >/dev/tty
-    IFS= read -r DOWNLOAD_DIR </dev/tty
-    DOWNLOAD_DIR="${DOWNLOAD_DIR:-$HOME/Music/Soulseek Downloads}"
-fi
-# Expand leading tilde if provided
-case "$DOWNLOAD_DIR" in
-    "~"|"~/"*) DOWNLOAD_DIR="$HOME${DOWNLOAD_DIR#\~}" ;;
-esac
-
-if [ -z "$DEFAULT_AIFF" ]; then
-    printf "Attivare di default la conversione FLAC -> AIFF (MP3 invariati)? [s/N]: " >/dev/tty
-    IFS= read -r aiff_ans </dev/tty
-    case "$(printf '%s' "$aiff_ans" | tr '[:upper:]' '[:lower:]')" in
-        s|si|sì|y|yes) DEFAULT_AIFF="true" ;;
-        *) DEFAULT_AIFF="false" ;;
-    esac
-fi
-
-echo ""
 TMP_WORK="$(mktemp -d /tmp/slsk_install_XXXXXX)"
 cleanup() { rm -rf "$TMP_WORK"; }
 trap cleanup EXIT
 
-mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/config" "$INSTALL_DIR/lists" "$DOWNLOAD_DIR"
+mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/config" "$INSTALL_DIR/lists"
 
-echo "[1/7] Scarico il progetto da GitHub ($REPO_SLUG)..."
+echo "[1/6] Scarico l'app da GitHub ($REPO_SLUG)..."
 curl -fL --progress-bar "https://github.com/$REPO_SLUG/archive/refs/heads/$REPO_BRANCH.tar.gz" -o "$TMP_WORK/repo.tar.gz"
 tar -xzf "$TMP_WORK/repo.tar.gz" -C "$TMP_WORK"
 SRC_ROOT="$(find "$TMP_WORK" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
@@ -108,7 +63,7 @@ cp "$SRC_ROOT/README.md" "$INSTALL_DIR/README.md"
 [ -f "$SRC_ROOT/config/pipeline.json.example" ] && cp "$SRC_ROOT/config/pipeline.json.example" "$INSTALL_DIR/config/"
 chmod +x "$INSTALL_DIR/Soulseek Batch Pipeline.command"
 
-echo "[2/7] Verifico Python 3..."
+echo "[2/6] Verifico Python 3..."
 find_working_python() {
     for p in \
         "$INSTALL_DIR/runtime/python/bin/python3" \
@@ -129,7 +84,7 @@ find_working_python() {
 
 PYTHON_BIN="$(find_working_python || true)"
 if [ -z "$PYTHON_BIN" ]; then
-    echo "      Python 3 non trovato: scarico runtime Python standalone (nessun Homebrew necessario)..."
+    echo "      Scarico Python 3 standalone (nessun Homebrew necessario)..."
     PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_STANDALONE_TAG}/cpython-${PYTHON_STANDALONE_VER}%2B${PYTHON_STANDALONE_TAG}-${PY_ARCH}-install_only_stripped.tar.gz"
     mkdir -p "$INSTALL_DIR/runtime"
     curl -fL --progress-bar "$PY_URL" -o "$TMP_WORK/python.tar.gz"
@@ -140,13 +95,13 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 echo "      Python pronto: $PYTHON_BIN"
 
-echo "[3/7] Scarico Sockseek v$SOCKSEEK_VERSION ($SOCKSEEK_ARCH)..."
+echo "[3/6] Scarico Sockseek v$SOCKSEEK_VERSION ($SOCKSEEK_ARCH)..."
 SOCKSEEK_URL="https://github.com/fiso64/sockseek/releases/download/v${SOCKSEEK_VERSION}/sockseek_${SOCKSEEK_VERSION}_${SOCKSEEK_ARCH}.tar.gz"
 curl -fL --progress-bar "$SOCKSEEK_URL" -o "$TMP_WORK/sockseek.tar.gz"
 tar -xzf "$TMP_WORK/sockseek.tar.gz" -C "$INSTALL_DIR/bin"
 chmod +x "$INSTALL_DIR/bin/sockseek"
 
-echo "[4/7] Preparo yt-dlp e deno (per YouTube)..."
+echo "[4/6] Preparo yt-dlp e deno (per YouTube)..."
 if command -v yt-dlp >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/yt-dlp" ] || [ -x "/usr/local/bin/yt-dlp" ]; then
     echo "      yt-dlp già presente sul sistema."
 else
@@ -162,7 +117,7 @@ else
     chmod +x "$INSTALL_DIR/bin/deno"
 fi
 
-echo "[5/7] Preparo ffmpeg e ffprobe (per conversione FLAC -> AIFF)..."
+echo "[5/6] Preparo ffmpeg, ffprobe e finestra nativa macOS..."
 if command -v ffmpeg >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffmpeg" ] || [ -x "/usr/local/bin/ffmpeg" ]; then
     echo "      ffmpeg già presente sul sistema."
 else
@@ -177,67 +132,40 @@ else
     chmod +x "$INSTALL_DIR/bin/ffprobe"
 fi
 
-# Compile native Swift prompt if Command Line Tools are available; otherwise src/slsk_prompt.js is used automatically.
+# Compile native Swift helpers if Xcode Command Line Tools exist; otherwise src/slsk_*.js JXA runs natively.
 if xcode-select -p >/dev/null 2>&1 && command -v swiftc >/dev/null 2>&1; then
     swiftc -O "$INSTALL_DIR/src/slsk_prompt.swift" -o "$INSTALL_DIR/bin/slsk-prompt" 2>/dev/null || true
+    swiftc -O "$INSTALL_DIR/src/slsk_setup.swift" -o "$INSTALL_DIR/bin/slsk-setup" 2>/dev/null || true
     [ -f "$INSTALL_DIR/bin/slsk-prompt" ] && chmod +x "$INSTALL_DIR/bin/slsk-prompt"
+    [ -f "$INSTALL_DIR/bin/slsk-setup" ] && chmod +x "$INSTALL_DIR/bin/slsk-setup"
 fi
 
 xattr -dr com.apple.quarantine "$INSTALL_DIR/bin" 2>/dev/null || true
 
-echo "[6/7] Salvo configurazione Soulseek e preferenze..."
-SLSK_USER="$SLSK_USER" SLSK_PASS="$SLSK_PASS" DOWNLOAD_DIR="$DOWNLOAD_DIR" DEFAULT_AIFF="$DEFAULT_AIFF" INSTALL_DIR="$INSTALL_DIR" "$PYTHON_BIN" - << 'PYEOF'
-import json
-import os
+# Optional non-interactive seeding via env vars (used for CI/tests); normal users use the First-Run Finder window.
+if [ -n "${SLSK_USER:-}" ] && [ -n "${SLSK_PASS:-}" ]; then
+    INSTALL_DIR="$INSTALL_DIR" SLSK_USER="$SLSK_USER" SLSK_PASS="$SLSK_PASS" \
+    DOWNLOAD_DIR="${SLSK_DOWNLOAD_DIR:-$HOME/Music/Soulseek Downloads}" \
+    DEFAULT_AIFF="${SLSK_DEFAULT_AIFF:-false}" "$PYTHON_BIN" - << 'PYEOF'
+import os, sys
 from pathlib import Path
-
 install_dir = Path(os.environ["INSTALL_DIR"])
-download_dir = os.environ["DOWNLOAD_DIR"]
-user = os.environ["SLSK_USER"]
-password = os.environ["SLSK_PASS"]
-default_aiff = os.environ["DEFAULT_AIFF"].lower() == "true"
-
-sockseek_conf = install_dir / "config" / "sockseek.conf"
-sockseek_conf.write_text(
-    f"username = {user}\n"
-    f"password = {password}\n"
-    f"output-dir = {download_dir}\n"
-    "pref-format = flac,aiff,wav\n"
-    "format = flac,aiff,wav,mp3\n"
-    "pref-min-bitrate = 320\n"
-    "length-tol = 5\n"
-    "pref-length-tol = 5\n"
-    "fast-search = true\n"
-    "write-index = true\n",
-    encoding="utf-8",
+sys.path.insert(0, str(install_dir / "src"))
+from config import load_config
+from setup_ui import write_setup_configs
+cfg = load_config(install_dir / "config" / "pipeline.json")
+write_setup_configs(
+    cfg,
+    username=os.environ["SLSK_USER"],
+    password=os.environ["SLSK_PASS"],
+    output_dir=Path(os.environ["DOWNLOAD_DIR"]).expanduser(),
+    convert_flac_to_aiff=os.environ["DEFAULT_AIFF"].lower() == "true",
 )
-os.chmod(sockseek_conf, 0o600)
-
-pipeline_json = install_dir / "config" / "pipeline.json"
-existing = {}
-if pipeline_json.is_file():
-    try:
-        existing = json.loads(pipeline_json.read_text(encoding="utf-8"))
-    except Exception:
-        existing = {}
-
-existing.update(
-    {
-        "output_dir": download_dir,
-        "spotify_client_id": existing.get("spotify_client_id", ""),
-        "spotify_client_secret": existing.get("spotify_client_secret", ""),
-        "ollama_url": existing.get("ollama_url", "http://127.0.0.1:11434"),
-        "ollama_model": existing.get("ollama_model", "auto"),
-        "llm_batch_size": existing.get("llm_batch_size", 25),
-        "convert_flac_to_aiff": default_aiff,
-    }
-)
-pipeline_json.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-os.chmod(pipeline_json, 0o600)
 PYEOF
+fi
 
-echo "[7/7] Installo il Servizio macOS (tasto destro -> Servizi -> Scarica con Soulseek)..."
-INSTALL_DIR="$INSTALL_DIR" SLSK_SERVICES_DIR="${SLSK_SERVICES_DIR:-$HOME/Library/Services}" "$PYTHON_BIN" - << 'PYEOF'
+echo "[6/6] Installo il Servizio macOS (tasto destro -> Servizi -> Scarica con Soulseek)..."
+INSTALL_DIR="$INSTALL_DIR" SLSK_SERVICES_DIR="$SERVICES_DIR" "$PYTHON_BIN" - << 'PYEOF'
 import os
 from pathlib import Path
 import plistlib
@@ -277,45 +205,29 @@ for p in "$PROJECT_DIR/runtime/python/bin/python3" "/opt/homebrew/bin/python3" "
     fi
 done
 
-PARSED=$("$PYTHON_BIN" -c '
-import json, sys
+URL=$("$PYTHON_BIN" -c '
+import sys
 sys.path.insert(0, sys.argv[1])
-from config import load_config
 from url_utils import extract_url_from_text, classify_url
 raw = sys.stdin.read()
 cand = extract_url_from_text(raw) or raw.strip()
-cfg = load_config()
 try:
-    url = classify_url(cand).url
-    print(json.dumps({{"url": url, "default_convert": bool(cfg.convert_flac_to_aiff)}}))
+    print(classify_url(cand).url)
 except Exception:
     pass
 ' "$PROJECT_DIR/src" <<< "$SELECTED")
 
-if [ -z "$PARSED" ]; then
+if [ -z "$URL" ]; then
     /usr/bin/osascript -e 'display alert "Scarica con Soulseek" message "Nessun link YouTube o Spotify valido trovato nel testo selezionato." as warning' >/dev/null 2>&1
     exit 0
 fi
-
-URL=$("$PYTHON_BIN" -c 'import json,sys; print(json.loads(sys.argv[1])["url"])' "$PARSED")
-DEF_CONV=$("$PYTHON_BIN" -c 'import json,sys; print("true" if json.loads(sys.argv[1])["default_convert"] else "false")' "$PARSED")
-
-if [ -x "$PROJECT_DIR/bin/slsk-prompt" ]; then
-    PROMPT_OUT=$("$PROJECT_DIR/bin/slsk-prompt" --url "$URL" --default-convert "$DEF_CONV") || exit 0
-else
-    PROMPT_OUT=$(/usr/bin/osascript -l JavaScript "$PROJECT_DIR/src/slsk_prompt.js" --url "$URL" --default-convert "$DEF_CONV") || exit 0
-fi
-
-CONFIRMED=$("$PYTHON_BIN" -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if d.get("confirmed") else "0")' "$PROMPT_OUT" 2>/dev/null || echo "0")
-[ "$CONFIRMED" = "1" ] || exit 0
-CONVERT_FLAG=$("$PYTHON_BIN" -c 'import json,sys; d=json.loads(sys.argv[1]); print("--convert-aiff" if d.get("convert_flac_to_aiff") else "--no-convert-aiff")' "$PROMPT_OUT")
 
 RUNNER="/tmp/slsk_svc_$$.command"
 QUOTED_URL=$("$PYTHON_BIN" -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$URL")
 cat > "$RUNNER" << EOF
 #!/bin/bash
 rm -f -- "\\$0"
-exec "$PROJECT_DIR/Soulseek Batch Pipeline.command" --pause $CONVERT_FLAG $QUOTED_URL
+exec "$PROJECT_DIR/Soulseek Batch Pipeline.command" --pause $QUOTED_URL
 EOF
 chmod +x "$RUNNER"
 /usr/bin/open -a Terminal "$RUNNER"'''
@@ -327,11 +239,7 @@ document_wflow = {
     "actions": [
         {
             "action": {
-                "AMAccepts": {
-                    "Container": "List",
-                    "Optional": True,
-                    "Types": ["com.apple.cocoa.string"],
-                },
+                "AMAccepts": {"Container": "List", "Optional": True, "Types": ["com.apple.cocoa.string"]},
                 "AMActionVersion": "2.0.3",
                 "AMApplication": ["Automator"],
                 "AMParameterProperties": {
@@ -341,10 +249,7 @@ document_wflow = {
                     "shell": {},
                     "source": {},
                 },
-                "AMProvides": {
-                    "Container": "List",
-                    "Types": ["com.apple.cocoa.string"],
-                },
+                "AMProvides": {"Container": "List", "Types": ["com.apple.cocoa.string"]},
                 "ActionBundlePath": "/System/Library/Automator/Run Shell Script.action",
                 "ActionName": "Run Shell Script",
                 "ActionParameters": {
@@ -402,17 +307,24 @@ PYEOF
 
 /System/Library/CoreServices/pbs -update 2>/dev/null || true
 
+# Launch First-Run Setup window once (Finder 'Sfoglia...' folder picker + Soulseek login).
+if [ -z "${SLSK_SKIP_SETUP:-}" ] && [ ! -f "$INSTALL_DIR/config/sockseek.conf" ]; then
+    echo ""
+    echo "Apro la finestra di configurazione iniziale (credenziali Soulseek + cartella download)..."
+    "$INSTALL_DIR/Soulseek Batch Pipeline.command" --setup || true
+fi
+
 SOCK_VER="$("$INSTALL_DIR/bin/sockseek" --version 2>/dev/null || echo "ok")"
 echo ""
 echo "=========================================="
 echo "  Installazione completata! (sockseek $SOCK_VER)"
 echo "=========================================="
-echo "Cartella app:      $INSTALL_DIR"
-echo "Cartella download: $DOWNLOAD_DIR"
+echo "Cartella app: $INSTALL_DIR"
 echo ""
 echo "Come usarlo:"
-echo "  1. Fai doppio click su 'Soulseek Batch Pipeline.command' nella cartella appena aperta"
+echo "  1. Doppio click su 'Soulseek Batch Pipeline.command'"
 echo "  2. Oppure seleziona un link Spotify o YouTube -> tasto destro -> Servizi -> Scarica con Soulseek"
+echo "  (Per modificare credenziali o cartella in futuro: esegui con --setup)"
 echo ""
 if [ -z "${SLSK_NO_OPEN_FINDER:-}" ]; then
     /usr/bin/open "$INSTALL_DIR" 2>/dev/null || true

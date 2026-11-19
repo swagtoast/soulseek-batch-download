@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
 from config import PipelineConfig, load_config, save_convert_preference
 from downloader import download_collection
 from models import CollectionExport
+from setup_ui import ensure_configured
 from spotify_extractor import extract_spotify
 from url_utils import classify_url
 from youtube_extractor import extract_youtube
@@ -44,7 +45,7 @@ def print_summary(export: CollectionExport) -> None:
     print(f"\n=== {kind_label}: {export.name} ===")
     if export.kind == "album" and export.artist:
         print(f"Artista: {export.artist} | Album: {export.album}")
-    print(f"Tracce estratte: {len(export.tracks)}" + (" (formattate con Ollama)" if export.used_llm else ""))
+    print(f"Tracce estratte: {len(export.tracks)}" + (" (formattate con LLM)" if export.used_llm else ""))
     for idx, tr in enumerate(export.tracks[:15], start=1):
         dur = f" [{tr.duration_sec}s]" if tr.duration_sec else ""
         prefix = f"{tr.artist} - " if tr.artist else ""
@@ -97,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Esporta playlist/album da Spotify o YouTube e scarica da Soulseek senza Docker.",
     )
     parser.add_argument("url", nargs="?", help="URL Spotify o YouTube (playlist, album o video full album)")
+    parser.add_argument("--setup", action="store_true", help="Apri la finestra di configurazione iniziale")
     parser.add_argument("--export-only", action="store_true", help="Esporta solo il file CSV senza avviare Soulseek")
     parser.add_argument(
         "--mode",
@@ -117,12 +119,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="Mantiene i .flac originali senza convertirli in .aiff",
     )
-    parser.add_argument("--no-gui", action="store_true", help="Disabilita finestra grafica di input/checkbox")
+    parser.add_argument("--no-gui", action="store_true", help="Disabilita finestre grafiche di input/setup")
     parser.add_argument("--no-finder", action="store_true", help="Non aprire il Finder al termine del download")
     parser.add_argument("--pause", action="store_true", help="Attendi Invio alla fine (utile da .command)")
     args = parser.parse_args(argv)
 
     cfg = load_config()
+
+    # First-run-only setup (Soulseek credentials + Finder "Sfoglia..." folder picker).
+    if args.setup or not args.export_only:
+        updated_cfg = ensure_configured(cfg, force_setup=args.setup, no_gui=args.no_gui)
+        if updated_cfg is None:
+            print("Configurazione iniziale annullata.")
+            return 0
+        cfg = updated_cfg
+        if args.setup and not args.url:
+            return 0
+
     raw_input = args.url
     convert_aiff = cfg.convert_flac_to_aiff if args.convert_aiff is None else bool(args.convert_aiff)
     interactive = False
@@ -144,14 +157,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             try:
                 raw_input = input("Incolla URL Spotify o YouTube (playlist / album / video full album): ").strip()
-                if args.convert_aiff is None and not args.export_only:
-                    default_hint = "S/n" if convert_aiff else "s/N"
-                    ans = input(f"Convertire i .flac scaricati in .aiff (eliminando i .flac, .mp3 invariati)? [{default_hint}]: ").strip().lower()
-                    if ans in {"s", "si", "sì", "y", "yes"}:
-                        convert_aiff = True
-                    elif ans in {"n", "no"}:
-                        convert_aiff = False
-                    save_convert_preference(cfg, convert_aiff)
             except EOFError:
                 return 1
     elif args.convert_aiff is not None:
