@@ -1,16 +1,22 @@
-# Soulseek Batch Download (macOS, senza Docker)
+# Soulseek Batch Download (macOS & Windows, senza Docker)
 
-Pipeline nativa e leggera per macOS (Apple Silicon & Intel) per scaricare playlist, full album e brani da **Spotify** e **YouTube** tramite **Soulseek**, senza Docker, senza Homebrew e senza ambienti virtuali Python.
+Pipeline nativa e leggera per **macOS** (Apple Silicon & Intel) e **Windows 10/11** per scaricare playlist, full album e brani da **Spotify** e **YouTube** tramite **Soulseek**, senza Docker, senza Homebrew/Winget e senza diritti di amministratore.
 
-## Installazione rapida (1 comando, senza Homebrew)
+## Installazione rapida (1 comando)
 
-Apri il **Terminale** su macOS e incolla questo comando tutto-in-uno:
-
+### macOS (Terminale)
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/swagtoast/soulseek-batch-download/main/install.sh)
 ```
 
-Al termine dell'installazione si apre automaticamente (e **solo al primo avvio**) la finestra nativa macOS dove inserire:
+### Windows 10/11 (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/swagtoast/soulseek-batch-download/main/install.ps1 | iex
+```
+
+Su **Windows** installa tutto in `%LOCALAPPDATA%\Soulseek Batch Download` (~465 MB su PC pulito, zero admin), crea l'icona sul Desktop/Start, registra il protocollo `soulseekdl://`, attiva il **pulsante fluttuante nativo** (evidenzia o copia un link Spotify/YouTube in qualsiasi app → compare subito **`Scarica con Soulseek`** vicino al cursore, oppure `Ctrl+Alt+S`) e include la cartella `browser-extension/` per il tasto destro puro su Chrome/Edge/Firefox.
+
+Al termine dell'installazione si apre automaticamente (e **solo al primo avvio**) la finestra nativa dove inserire:
 - **Username** e **Password** Soulseek (salvati in locale con permessi `600`, solo proprietario)
 - **Cartella di download**, scegliendola direttamente dal Finder con il pulsante **Sfoglia…**
 - **Formato**: menu a tendina unico `.flac (lossless)`, `.aiff (PCM 24-bit lossless)` o `.mp3 (320 kbps)` (con `.mp3` cerca prima MP3 320 kbps leggeri su Soulseek; in caso di conversione elimina in automatico il `.flac` originale; con `.flac` salta la conversione)

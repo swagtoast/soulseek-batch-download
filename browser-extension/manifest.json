@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Scarica con Soulseek",
+  "version": "1.0.0",
+  "description": "Aggiunge 'Scarica con Soulseek' al menu tasto destro su link e testo selezionato (Spotify e YouTube).",
+  "permissions": ["contextMenus"],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  }
+}

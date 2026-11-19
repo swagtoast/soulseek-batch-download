@@ -317,11 +317,22 @@ def _maybe_convert(
 
 
 def _open_in_finder(target: Path, reveal: bool = False) -> None:
-    """Open a downloaded folder (or reveal a single file) in macOS Finder."""
-    if sys.platform != "darwin" or not target.exists():
+    """Open a downloaded folder (or reveal a single file) in macOS Finder or Windows File Explorer."""
+    if not target.exists():
         return
-    cmd = ["/usr/bin/open", "-R", str(target)] if reveal else ["/usr/bin/open", str(target)]
-    subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if sys.platform == "darwin":
+        cmd = ["/usr/bin/open", "-R", str(target)] if reveal else ["/usr/bin/open", str(target)]
+        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif os.name == "nt":
+        if reveal:
+            subprocess.run(
+                ["explorer.exe", f"/select,{target}"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            os.startfile(str(target))  # type: ignore[attr-defined]
 
 
 def _reveal_after_download(
@@ -329,9 +340,10 @@ def _reveal_after_download(
     before_files: dict[Path, float],
     preferred_dir: Path | None,
 ) -> None:
+    fm_label = "Esplora File" if os.name == "nt" else "Finder"
     post_audio = _new_audio_files(before_files, cfg.output_dir)
     if len(post_audio) == 1 and post_audio[0].parent == cfg.output_dir:
-        print(f"[Finder] Apro nel Finder: {post_audio[0]}")
+        print(f"[{fm_label}] Apro in {fm_label}: {post_audio[0]}")
         _open_in_finder(post_audio[0], reveal=True)
         return
 
@@ -348,7 +360,7 @@ def _reveal_after_download(
         target_dir = preferred_dir
 
     if target_dir is not None:
-        print(f"[Finder] Apro cartella nel Finder: {target_dir}")
+        print(f"[{fm_label}] Apro cartella in {fm_label}: {target_dir}")
         _open_in_finder(target_dir, reveal=False)
 
 

@@ -97,6 +97,16 @@ class UrlUtilsTests(unittest.TestCase):
     def test_sanitize_filename(self) -> None:
         self.assertEqual(sanitize_filename('  A/B: C*?"<>|  '), "A B C")
 
+    def test_unwrap_windows_protocol_uri_and_browser_extension_manifest(self) -> None:
+        raw = "soulseekdl://https%3A%2F%2Fopen.spotify.com%2Falbum%2F4aawyAB9vmqN3uQ7FjRGTy"
+        self.assertEqual(cli._unwrap_protocol_url(raw), "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy")
+        manifest_path = PROJECT_ROOT / "browser-extension" / "manifest.json"
+        self.assertTrue(manifest_path.is_file())
+        import json
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["manifest_version"], 3)
+        self.assertIn("contextMenus", manifest["permissions"])
+
 
 class LlmFallbackAndYouTubeExtractorTests(unittest.TestCase):
     def test_heuristic_cleans_garbage_and_avoids_fake_channel_artist(self) -> None:

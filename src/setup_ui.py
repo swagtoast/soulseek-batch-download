@@ -78,7 +78,8 @@ def write_setup_configs(
         "write-index = false\n",
         encoding="utf-8",
     )
-    os.chmod(cfg.sockseek_conf, 0o600)
+    if os.name != "nt":
+        os.chmod(cfg.sockseek_conf, 0o600)
 
     existing: dict = {}
     if cfg.config_file.is_file():
@@ -102,11 +103,12 @@ def write_setup_configs(
         }
     )
     cfg.config_file.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-    os.chmod(cfg.config_file, 0o600)
+    if os.name != "nt":
+        os.chmod(cfg.config_file, 0o600)
 
 
 def _can_use_gui(no_gui: bool) -> bool:
-    if no_gui or sys.platform != "darwin":
+    if no_gui or (sys.platform != "darwin" and os.name != "nt"):
         return False
     if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
         return False
@@ -200,10 +202,41 @@ def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | No
     }
 
 
+def _run_windows_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
+    if not cfg.win_setup_ps1.is_file():
+        return None
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-STA",
+        "-File",
+        str(cfg.win_setup_ps1),
+        "-DefaultDir",
+        str(cfg.output_dir),
+        "-DefaultFormat",
+        cfg.convert_format,
+    ]
+    if existing_user:
+        cmd.extend(["-DefaultUser", existing_user])
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return {"confirmed": False}
+    try:
+        return json.loads(raw.splitlines()[-1])
+    except json.JSONDecodeError:
+        return None
+
+
 def _run_gui_setup(cfg: PipelineConfig) -> dict | None:
     existing_user, _ = _read_sockseek_creds(cfg.sockseek_conf)
     if existing_user in _PLACEHOLDER_VALUES:
         existing_user = ""
+
+    if os.name == "nt":
+        return _run_windows_setup(cfg, existing_user)
 
     if cfg.setup_bin.is_file() and os.access(cfg.setup_bin, os.X_OK):
         extra_args = [

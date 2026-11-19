@@ -199,7 +199,16 @@ def apply_update_from_tarball(cfg: PipelineConfig, tar_bytes: bytes) -> None:
                 shutil.rmtree(target_tests, ignore_errors=True)
             shutil.copytree(new_tests, target_tests)
 
-        for rel_name in ("README.md", "config/sockseek.conf.example", "config/pipeline.json.example", "assets/app_icon.png"):
+        for rel_name in (
+            "README.md",
+            "config/sockseek.conf.example",
+            "config/pipeline.json.example",
+            "assets/app_icon.png",
+            "assets/app_icon.ico",
+            "Soulseek Batch Pipeline.bat",
+            "browser-extension/manifest.json",
+            "browser-extension/background.js",
+        ):
             src_f = extracted_root / rel_name
             if src_f.is_file():
                 dst_f = root / rel_name

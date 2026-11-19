@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import urllib.parse
 
 # Ensure sibling modules under src/ resolve cleanly regardless of cwd.
 SRC_DIR = Path(__file__).resolve().parent
@@ -76,9 +77,60 @@ def print_summary(export: CollectionExport) -> None:
 def _can_use_gui_prompt(cfg: PipelineConfig, no_gui: bool) -> bool:
     if no_gui or os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
         return False
+    if os.name == "nt":
+        return cfg.win_prompt_ps1.is_file()
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
         return True
     return sys.platform == "darwin" and Path("/usr/bin/osascript").is_file()
+
+
+def _unwrap_protocol_url(raw: str | None) -> str | None:
+    if not raw:
+        return raw
+    s = raw.strip()
+    if s.lower().startswith("soulseekdl://"):
+        inner = s[len("soulseekdl://") :].lstrip("/")
+        return urllib.parse.unquote(inner).strip()
+    return s
+
+
+def _prompt_with_windows(
+    cfg: PipelineConfig,
+    url: str | None,
+    default_format: str,
+    label: str | None = None,
+) -> tuple[bool, str, str] | None:
+    if not cfg.win_prompt_ps1.is_file():
+        return None
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-STA",
+        "-File",
+        str(cfg.win_prompt_ps1),
+        "-DefaultFormat",
+        normalize_convert_format(default_format),
+    ]
+    if url:
+        cmd.extend(["-Url", url])
+    if label:
+        cmd.extend(["-Label", label])
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return None if proc.returncode != 0 else (False, "", default_format)
+    try:
+        data = json.loads(raw.splitlines()[-1])
+        raw_fmt = data.get("convert_format", default_format)
+        return (
+            bool(data.get("confirmed")),
+            str(data.get("url") or ""),
+            normalize_convert_format(raw_fmt),
+        )
+    except json.JSONDecodeError:
+        return None
 
 
 def _as_escape(text: str) -> str:
@@ -156,6 +208,9 @@ def _prompt_with_gui(
     default_format: str,
     label: str | None = None,
 ) -> tuple[bool, str, str] | None:
+    if os.name == "nt":
+        return _prompt_with_windows(cfg, url, default_format, label=label)
+
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
         extra_args = ["--default-format", normalize_convert_format(default_format)]
         if url:
@@ -258,13 +313,16 @@ def main(argv: list[str] | None = None) -> int:
             if argv is None:
                 os.environ["SLSK_JUST_UPDATED"] = "1"
                 restart_args = [a for a in sys.argv[1:] if a != "--update"]
+                if os.name == "nt":
+                    proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), *restart_args], check=False)
+                    return proc.returncode
                 os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *restart_args])
         elif args.update and not args.url and not args.setup:
             return 0
 
     did_first_run_setup = False
 
-    # First-run-only setup (Soulseek credentials + Finder "Sfoglia..." folder picker).
+    # First-run-only setup (Soulseek credentials + Finder/Explorer "Sfoglia..." folder picker).
     if args.setup or not args.export_only:
         was_unconfigured = is_first_run_needed(cfg)
         updated_cfg = ensure_configured(cfg, force_setup=args.setup, no_gui=args.no_gui)
@@ -276,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.setup and not args.url:
             return 0
 
-    raw_input = args.url
+    raw_input = _unwrap_protocol_url(args.url)
     convert_format = cfg.convert_format if args.convert_format is None else normalize_convert_format(args.convert_format)
     interactive = False
 

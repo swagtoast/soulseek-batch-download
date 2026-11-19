@@ -48,6 +48,29 @@ def detect_hardware_profile() -> HardwareProfile:
                 ram_gb = max(1, int(round(int(proc.stdout.strip()) / (1024 ** 3))))
         except Exception:
             pass
+    elif os.name == "nt":
+        try:
+            import ctypes
+
+            class _MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = _MemoryStatusEx()
+            stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):  # type: ignore[attr-defined]
+                ram_gb = max(1, int(round(stat.ullTotalPhys / (1024 ** 3))))
+        except Exception:
+            pass
     elif hasattr(os, "sysconf"):
         try:
             pages = os.sysconf("SC_PHYS_PAGES")
@@ -57,7 +80,7 @@ def detect_hardware_profile() -> HardwareProfile:
         except Exception:
             pass
 
-    is_apple_silicon = arch in {"arm64", "aarch64"}
+    is_apple_silicon = sys.platform == "darwin" and arch in {"arm64", "aarch64"}
     low_resource = ram_gb <= 8 or cpu_cores <= 4
     recommended_llm_batch_size = 15 if low_resource else 25
     recommended_yt_workers = 2 if low_resource else 4
@@ -103,6 +126,8 @@ class PipelineConfig:
     sockseek_conf: Path
     prompt_bin: Path
     setup_bin: Path
+    win_prompt_ps1: Path
+    win_setup_ps1: Path
     mlx_python: str
     mlx_base_model: str
     mlx_adapter_dir: Path
@@ -130,20 +155,23 @@ class PipelineConfig:
 
 
 def _resolve_binary(configured: str, fallback_name: str, extra_paths: tuple[str, ...]) -> str:
-    local_bin = PROJECT_ROOT / "bin" / fallback_name
-    if local_bin.is_file() and os.access(local_bin, os.X_OK):
-        return str(local_bin)
+    exe_names = (f"{fallback_name}.exe", fallback_name) if os.name == "nt" else (fallback_name,)
+    for name in exe_names:
+        local_bin = PROJECT_ROOT / "bin" / name
+        if local_bin.is_file() and (os.name == "nt" or os.access(local_bin, os.X_OK)):
+            return str(local_bin)
     if configured:
         expanded = Path(configured).expanduser()
-        if expanded.is_file() and os.access(expanded, os.X_OK):
+        if expanded.is_file() and (os.name == "nt" or os.access(expanded, os.X_OK)):
             return str(expanded)
-    found = shutil.which(fallback_name)
-    if found:
-        return found
+    for name in exe_names:
+        found = shutil.which(name)
+        if found:
+            return found
     for candidate in extra_paths:
-        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+        if Path(candidate).is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
             return candidate
-    return configured or fallback_name
+    return configured or exe_names[0]
 
 
 def load_config(config_path: Path | None = None) -> PipelineConfig:
@@ -163,10 +191,13 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
     hardware = detect_hardware_profile()
 
     lists_dir = Path(raw.get("lists_dir") or (PROJECT_ROOT / "lists")).expanduser()
-    sockseek_bin = Path(raw.get("sockseek_path") or (PROJECT_ROOT / "bin" / "sockseek")).expanduser()
+    sockseek_default = PROJECT_ROOT / "bin" / ("sockseek.exe" if os.name == "nt" else "sockseek")
+    sockseek_bin = Path(raw.get("sockseek_path") or sockseek_default).expanduser()
     sockseek_conf = Path(raw.get("sockseek_conf") or (PROJECT_ROOT / "config" / "sockseek.conf")).expanduser()
     prompt_bin = Path(raw.get("prompt_path") or (PROJECT_ROOT / "bin" / "slsk-prompt")).expanduser()
     setup_bin = Path(raw.get("setup_path") or (PROJECT_ROOT / "bin" / "slsk-setup")).expanduser()
+    win_prompt_ps1 = PROJECT_ROOT / "src" / "win" / "slsk_prompt.ps1"
+    win_setup_ps1 = PROJECT_ROOT / "src" / "win" / "slsk_setup.ps1"
 
     default_mlx_py = Path.home() / "llm_wiki_agent" / ".venv" / "bin" / "python"
     mlx_python = str(
@@ -227,6 +258,8 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         sockseek_conf=sockseek_conf,
         prompt_bin=prompt_bin,
         setup_bin=setup_bin,
+        win_prompt_ps1=win_prompt_ps1,
+        win_setup_ps1=win_setup_ps1,
         mlx_python=mlx_python,
         mlx_base_model=mlx_base_model,
         mlx_adapter_dir=mlx_adapter_dir,
