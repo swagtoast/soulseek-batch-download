@@ -6,11 +6,77 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
+import subprocess
+import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VALID_CONVERT_FORMATS = ("flac", "aiff", "mp3")
+
+
+@dataclass
+class HardwareProfile:
+    """Detected Mac hardware profile used to auto-tune parallelism, UI, and LLM memory limits."""
+
+    arch: str
+    cpu_cores: int
+    ram_gb: int
+    is_apple_silicon: bool
+    recommended_llm_batch_size: int
+    recommended_yt_workers: int
+    max_ollama_model_billions: int
+
+
+def detect_hardware_profile() -> HardwareProfile:
+    """Inspect local CPU architecture, core count, and RAM (pure stdlib, <5ms)."""
+    arch = platform.machine().lower() or "unknown"
+    cpu_cores = max(1, os.cpu_count() or 2)
+    ram_gb = 8
+
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["/usr/sbin/sysctl", "-n", "hw.memsize"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip().isdigit():
+                ram_gb = max(1, int(round(int(proc.stdout.strip()) / (1024 ** 3))))
+        except Exception:
+            pass
+    elif hasattr(os, "sysconf"):
+        try:
+            pages = os.sysconf("SC_PHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            if isinstance(pages, int) and isinstance(page_size, int) and pages > 0:
+                ram_gb = max(1, int(round((pages * page_size) / (1024 ** 3))))
+        except Exception:
+            pass
+
+    is_apple_silicon = arch in {"arm64", "aarch64"}
+    low_resource = ram_gb <= 8 or cpu_cores <= 4
+    recommended_llm_batch_size = 15 if low_resource else 25
+    recommended_yt_workers = 2 if low_resource else 4
+    if ram_gb <= 8:
+        max_ollama_b = 3
+    elif ram_gb < 16:
+        max_ollama_b = 8
+    else:
+        max_ollama_b = 16
+
+    return HardwareProfile(
+        arch=arch,
+        cpu_cores=cpu_cores,
+        ram_gb=ram_gb,
+        is_apple_silicon=is_apple_silicon,
+        recommended_llm_batch_size=recommended_llm_batch_size,
+        recommended_yt_workers=recommended_yt_workers,
+        max_ollama_model_billions=max_ollama_b,
+    )
 
 
 def normalize_convert_format(value: object) -> str:
@@ -36,9 +102,7 @@ class PipelineConfig:
     sockseek_bin: Path
     sockseek_conf: Path
     prompt_bin: Path
-    prompt_js: Path
     setup_bin: Path
-    setup_js: Path
     mlx_python: str
     mlx_base_model: str
     mlx_adapter_dir: Path
@@ -54,6 +118,11 @@ class PipelineConfig:
     spotify_client_secret: str
     convert_format: str
     delete_original: bool = True
+    hardware: HardwareProfile | None = None
+
+    def __post_init__(self) -> None:
+        if self.hardware is None:
+            self.hardware = detect_hardware_profile()
 
     @property
     def convert_flac_to_aiff(self) -> bool:
@@ -91,13 +160,13 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         or default_downloads
     ).expanduser()
 
+    hardware = detect_hardware_profile()
+
     lists_dir = Path(raw.get("lists_dir") or (PROJECT_ROOT / "lists")).expanduser()
     sockseek_bin = Path(raw.get("sockseek_path") or (PROJECT_ROOT / "bin" / "sockseek")).expanduser()
     sockseek_conf = Path(raw.get("sockseek_conf") or (PROJECT_ROOT / "config" / "sockseek.conf")).expanduser()
     prompt_bin = Path(raw.get("prompt_path") or (PROJECT_ROOT / "bin" / "slsk-prompt")).expanduser()
-    prompt_js = PROJECT_ROOT / "src" / "slsk_prompt.js"
     setup_bin = Path(raw.get("setup_path") or (PROJECT_ROOT / "bin" / "slsk-setup")).expanduser()
-    setup_js = PROJECT_ROOT / "src" / "slsk_setup.js"
 
     default_mlx_py = Path.home() / "llm_wiki_agent" / ".venv" / "bin" / "python"
     mlx_python = str(
@@ -157,9 +226,7 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         sockseek_bin=sockseek_bin,
         sockseek_conf=sockseek_conf,
         prompt_bin=prompt_bin,
-        prompt_js=prompt_js,
         setup_bin=setup_bin,
-        setup_js=setup_js,
         mlx_python=mlx_python,
         mlx_base_model=mlx_base_model,
         mlx_adapter_dir=mlx_adapter_dir,
@@ -170,7 +237,7 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
         ollama_bin=ollama_bin,
         ollama_url=str(os.environ.get("OLLAMA_HOST") or raw.get("ollama_url") or "http://127.0.0.1:11434").rstrip("/"),
         ollama_model=str(os.environ.get("OLLAMA_MODEL") or raw.get("ollama_model") or "auto"),
-        llm_batch_size=max(5, int(raw.get("llm_batch_size") or 25)),
+        llm_batch_size=max(5, int(raw.get("llm_batch_size") or hardware.recommended_llm_batch_size)),
         spotify_client_id=str(os.environ.get("SPOTIFY_CLIENT_ID") or raw.get("spotify_client_id") or ""),
         spotify_client_secret=str(os.environ.get("SPOTIFY_CLIENT_SECRET") or raw.get("spotify_client_secret") or ""),
         convert_format=(
@@ -179,6 +246,7 @@ def load_config(config_path: Path | None = None) -> PipelineConfig:
             else normalize_convert_format(raw.get("convert_flac_to_aiff", False))
         ),
         delete_original=bool(raw.get("delete_original", True)),
+        hardware=hardware,
     )
 
 

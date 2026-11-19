@@ -16,18 +16,25 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 ARCH="$(uname -m)"
+MACOS_VER="$(sw_vers -productVersion 2>/dev/null || echo "unknown")"
+CPU_CORES="$(sysctl -n hw.ncpu 2>/dev/null || echo 2)"
+RAM_BYTES="$(sysctl -n hw.memsize 2>/dev/null || echo 8589934592)"
+RAM_GB="$(( (RAM_BYTES + 536870912) / 1073741824 ))"
+
 case "$ARCH" in
     arm64)
         SOCKSEEK_ARCH="osx-arm64"
         DENO_ARCH="aarch64-apple-darwin"
         FFMPEG_ARCH="darwin-arm64"
         PY_ARCH="aarch64-apple-darwin"
+        CHIP_LABEL="Apple Silicon (arm64)"
         ;;
     x86_64)
         SOCKSEEK_ARCH="osx-x64"
         DENO_ARCH="x86_64-apple-darwin"
         FFMPEG_ARCH="darwin-x64"
         PY_ARCH="x86_64-apple-darwin"
+        CHIP_LABEL="Intel (x86_64)"
         ;;
     *)
         echo "Errore: architettura non supportata: $ARCH"
@@ -35,13 +42,26 @@ case "$ARCH" in
         ;;
 esac
 
+# Choose optimal native UI engine based on Mac specs:
+# - Apple Silicon OR strong Intel (>=6 cores & >=16 GB RAM) with Xcode CLT: compile single-window Swift AppKit UI.
+# - Lighter/older Intel Macs (e.g. 2018-2020 Air 8 GB) or Macs without Xcode CLT: skip Swift build (0s wait)
+#   and use zero-CPU StandardAdditions native macOS dialogs (display dialog / Finder choose folder).
+PREFER_SWIFT_UI="0"
+if [ "$ARCH" = "arm64" ] || { [ "$CPU_CORES" -ge 6 ] && [ "$RAM_GB" -ge 16 ]; }; then
+    PREFER_SWIFT_UI="1"
+fi
+
 echo ""
 echo "=========================================="
 echo "  Soulseek Batch Download — Installer Mac"
 echo "=========================================="
-echo "Architettura: $ARCH"
+echo "Profilo Mac: $CHIP_LABEL | macOS $MACOS_VER | ${CPU_CORES} core | ${RAM_GB} GB RAM"
 echo "Installazione in: $INSTALL_DIR"
 echo ""
+
+is_valid_bin() {
+    [ -x "$1" ] && [ -s "$1" ]
+}
 
 TMP_WORK="$(mktemp -d /tmp/slsk_install_XXXXXX)"
 cleanup() { rm -rf "$TMP_WORK"; }
@@ -96,7 +116,7 @@ fi
 echo "      Python pronto: $PYTHON_BIN"
 
 echo "[3/6] Preparo Sockseek v$SOCKSEEK_VERSION ($SOCKSEEK_ARCH)..."
-if [ -x "$INSTALL_DIR/bin/sockseek" ]; then
+if is_valid_bin "$INSTALL_DIR/bin/sockseek"; then
     echo "      sockseek già presente."
 else
     SOCKSEEK_URL="https://github.com/fiso64/sockseek/releases/download/v${SOCKSEEK_VERSION}/sockseek_${SOCKSEEK_VERSION}_${SOCKSEEK_ARCH}.tar.gz"
@@ -106,14 +126,14 @@ else
 fi
 
 echo "[4/6] Preparo yt-dlp e deno (per YouTube)..."
-if [ -x "$INSTALL_DIR/bin/yt-dlp" ] || command -v yt-dlp >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/yt-dlp" ] || [ -x "/usr/local/bin/yt-dlp" ]; then
+if is_valid_bin "$INSTALL_DIR/bin/yt-dlp" || command -v yt-dlp >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/yt-dlp" ] || [ -x "/usr/local/bin/yt-dlp" ]; then
     echo "      yt-dlp già presente."
 else
     curl -fL --progress-bar "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" -o "$INSTALL_DIR/bin/yt-dlp"
     chmod +x "$INSTALL_DIR/bin/yt-dlp"
 fi
 
-if [ -x "$INSTALL_DIR/bin/deno" ] || command -v deno >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/deno" ] || [ -x "/usr/local/bin/deno" ]; then
+if is_valid_bin "$INSTALL_DIR/bin/deno" || command -v deno >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/deno" ] || [ -x "/usr/local/bin/deno" ]; then
     echo "      deno già presente."
 else
     curl -fL --progress-bar "https://github.com/denoland/deno/releases/latest/download/deno-${DENO_ARCH}.zip" -o "$TMP_WORK/deno.zip"
@@ -121,24 +141,26 @@ else
     chmod +x "$INSTALL_DIR/bin/deno"
 fi
 
-echo "[5/6] Preparo ffmpeg, ffprobe e finestra nativa macOS..."
-if [ -x "$INSTALL_DIR/bin/ffmpeg" ] || command -v ffmpeg >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffmpeg" ] || [ -x "/usr/local/bin/ffmpeg" ]; then
+echo "[5/6] Preparo ffmpeg, ffprobe e interfaccia nativa macOS..."
+if is_valid_bin "$INSTALL_DIR/bin/ffmpeg" || command -v ffmpeg >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffmpeg" ] || [ -x "/usr/local/bin/ffmpeg" ]; then
     echo "      ffmpeg già presente."
 else
     curl -fL --progress-bar "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/ffmpeg-${FFMPEG_ARCH}" -o "$INSTALL_DIR/bin/ffmpeg"
     chmod +x "$INSTALL_DIR/bin/ffmpeg"
 fi
 
-if [ -x "$INSTALL_DIR/bin/ffprobe" ] || command -v ffprobe >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffprobe" ] || [ -x "/usr/local/bin/ffprobe" ]; then
+if is_valid_bin "$INSTALL_DIR/bin/ffprobe" || command -v ffprobe >/dev/null 2>&1 || [ -x "/opt/homebrew/bin/ffprobe" ] || [ -x "/usr/local/bin/ffprobe" ]; then
     echo "      ffprobe già presente."
 else
     curl -fL --progress-bar "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_RELEASE}/ffprobe-${FFMPEG_ARCH}" -o "$INSTALL_DIR/bin/ffprobe"
     chmod +x "$INSTALL_DIR/bin/ffprobe"
 fi
 
-# Optionally compile native Swift UI helpers with a strict timeout; StandardAdditions AppleScript fallback is instant on all Macs.
-if xcode-select -p >/dev/null 2>&1 && command -v swiftc >/dev/null 2>&1; then
-    echo "      Compilo finestra nativa macOS (max 30s, altrimenti usa finestre native macOS istantanee)..."
+# Clean up any legacy JXA scripts from prior installs
+rm -f "$INSTALL_DIR/src/slsk_setup.js" "$INSTALL_DIR/src/slsk_prompt.js"
+
+if [ "$PREFER_SWIFT_UI" = "1" ] && xcode-select -p >/dev/null 2>&1 && command -v swiftc >/dev/null 2>&1; then
+    echo "      Compilo finestra AppKit nativa (Swift, max 25s)..."
     INSTALL_DIR="$INSTALL_DIR" "$PYTHON_BIN" - << 'PYEOF' || true
 import os, subprocess
 from pathlib import Path
@@ -150,7 +172,7 @@ for src_name, bin_name in (("slsk_prompt.swift", "slsk-prompt"), ("slsk_setup.sw
             ["swiftc", "-Onone", str(root / "src" / src_name), "-o", str(out_bin)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=30,
+            timeout=25,
             check=False,
         )
         if res.returncode == 0 and out_bin.is_file():
@@ -159,12 +181,15 @@ for src_name, bin_name in (("slsk_prompt.swift", "slsk-prompt"), ("slsk_setup.sw
             out_bin.unlink(missing_ok=True)
     except subprocess.TimeoutExpired:
         out_bin.unlink(missing_ok=True)
-        print("      Compilazione Swift lenta su questo Mac: uso le finestre native macOS (istantanee).")
+        print("      Compilazione Swift lenta: uso i dialog nativi macOS (istantanei, 0% CPU).")
         break
 PYEOF
+else
+    rm -f "$INSTALL_DIR/bin/slsk-prompt" "$INSTALL_DIR/bin/slsk-setup"
+    echo "      Profilo leggero attivo: uso i dialog nativi macOS (istantanei, 0% CPU, zero compilazione)."
 fi
 
-xattr -dr com.apple.quarantine "$INSTALL_DIR/bin" 2>/dev/null || true
+xattr -dr com.apple.quarantine "$INSTALL_DIR" 2>/dev/null || true
 
 # Optional non-interactive seeding via env vars (used for CI/tests); normal users use the First-Run Finder window.
 if [ -n "${SLSK_USER:-}" ] && [ -n "${SLSK_PASS:-}" ]; then

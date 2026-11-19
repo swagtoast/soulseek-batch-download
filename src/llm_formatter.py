@@ -177,6 +177,19 @@ def _parse_llm_json(raw_content: str) -> dict:
     return data
 
 
+_MODEL_SIZE_B_RE = re.compile(r"(?:^|[:\-_])(\d+(?:\.\d+)?)b(?=$|[:\-_])", re.IGNORECASE)
+
+
+def _estimate_model_billions(model_name: str) -> float | None:
+    m = _MODEL_SIZE_B_RE.search(model_name or "")
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
 class OllamaSession:
     """Starts `ollama serve` on demand and terminates it on exit if we launched it."""
 
@@ -195,6 +208,15 @@ class OllamaSession:
         except Exception:
             return None
 
+    def _fits_hardware(self, model_name: str) -> bool:
+        hw = self.cfg.hardware
+        if hw is None:
+            return True
+        size_b = _estimate_model_billions(model_name)
+        if size_b is None:
+            return hw.ram_gb >= 12
+        return size_b <= float(hw.max_ollama_model_billions)
+
     def _pick_model(self, installed: list[str]) -> str:
         if not installed:
             return ""
@@ -205,10 +227,13 @@ class OllamaSession:
             for name in installed:
                 if name.startswith(requested + ":"):
                     return name
+        eligible = [m for m in installed if self._fits_hardware(m)]
+        if not eligible:
+            return ""
         for preferred in _PREFERRED_MODELS:
-            if preferred in installed:
+            if preferred in eligible:
                 return preferred
-        return installed[0]
+        return eligible[0]
 
     def __enter__(self) -> "OllamaSession":
         models = self._list_models()
@@ -249,13 +274,14 @@ class OllamaSession:
 
     def chat_json(self, system_prompt: str, user_prompt: str, keep_alive: str | int = 0) -> dict:
         """Call Ollama /api/chat expecting a strict JSON object response."""
+        num_ctx = 2048 if (self.cfg.hardware and self.cfg.hardware.ram_gb <= 8) else 4096
         payload = json.dumps(
             {
                 "model": self.model,
                 "stream": False,
                 "format": "json",
                 "keep_alive": keep_alive,
-                "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 1200},
+                "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": 1200},
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -275,6 +301,8 @@ class OllamaSession:
 
 def _mlx_is_available(cfg: PipelineConfig) -> bool:
     if os.environ.get("SLSK_DISABLE_MLX") == "1":
+        return False
+    if cfg.hardware and (not cfg.hardware.is_apple_silicon or cfg.hardware.ram_gb < 8):
         return False
     if not cfg.mlx_python or not cfg.mlx_base_model:
         return False

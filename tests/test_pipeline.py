@@ -15,10 +15,12 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import cli
-from config import load_config
+from config import HardwareProfile, load_config
 from converter import convert_downloaded_flacs, convert_downloaded_flacs_to_aiff
 from downloader import download_collection, write_tracks_csv
 from llm_formatter import (
+    OllamaSession,
+    _mlx_is_available,
     _parse_llm_json,
     extract_timestamp_lines,
     format_youtube_playlist_with_llm,
@@ -247,6 +249,36 @@ class LlmFallbackAndYouTubeExtractorTests(unittest.TestCase):
                 self.assertEqual(export.artist, "Cymande")
                 self.assertEqual(export.album, "Cymande")
                 self.assertEqual(export.total_tracks, 3)
+
+    def test_hardware_auto_profile_protects_8gb_intel_macs(self) -> None:
+        cfg = load_config()
+        cfg.ollama_model = "auto"
+        cfg.hardware = HardwareProfile(
+            arch="x86_64",
+            cpu_cores=4,
+            ram_gb=8,
+            is_apple_silicon=False,
+            recommended_llm_batch_size=15,
+            recommended_yt_workers=2,
+            max_ollama_model_billions=3,
+        )
+        self.assertFalse(_mlx_is_available(cfg))
+
+        sess = OllamaSession(cfg)
+        self.assertEqual(sess._pick_model(["qwen2.5:14b", "qwen2.5:7b"]), "")
+        self.assertEqual(sess._pick_model(["qwen2.5:14b", "minicpm5-2b:latest", "qwen2.5:3b"]), "minicpm5-2b:latest")
+
+        cfg.hardware = HardwareProfile(
+            arch="arm64",
+            cpu_cores=12,
+            ram_gb=24,
+            is_apple_silicon=True,
+            recommended_llm_batch_size=25,
+            recommended_yt_workers=4,
+            max_ollama_model_billions=16,
+        )
+        self.assertEqual(sess._pick_model(["qwen2.5:14b"]), "qwen2.5:14b")
+        self.assertEqual(sess._pick_model(["qwen2.5:14b", "minicpm5-2b:latest"]), "minicpm5-2b:latest")
 
 
 class FirstRunSetupTests(unittest.TestCase):

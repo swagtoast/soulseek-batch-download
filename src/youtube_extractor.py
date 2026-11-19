@@ -125,7 +125,8 @@ def _enrich_ambiguous_entries(cfg: PipelineConfig, raw_entries: list[dict], max_
         return
 
     targets = ambiguous[:max_lookups]
-    with ThreadPoolExecutor(max_workers=min(4, len(targets))) as pool:
+    hw_workers = cfg.hardware.recommended_yt_workers if cfg.hardware else 4
+    with ThreadPoolExecutor(max_workers=max(1, min(hw_workers, len(targets)))) as pool:
         list(pool.map(lambda e: _enrich_single_entry(cfg, e), targets))
 
 
