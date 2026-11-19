@@ -13,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 from config import PipelineConfig
@@ -20,7 +21,7 @@ from config import PipelineConfig
 
 REPO_SLUG = os.environ.get("SLSK_REPO_SLUG", "swagtoast/soulseek-batch-download")
 REPO_BRANCH = os.environ.get("SLSK_REPO_BRANCH", "main")
-CHECK_INTERVAL_SEC = 6 * 3600  # Check at most once every 6 hours unless --update is forced.
+CHECK_INTERVAL_SEC = 0  # Check on every launch (uses HTTP ETag 304 -> 0 GitHub rate-limit cost).
 
 
 def _state_file(cfg: PipelineConfig) -> Path:
@@ -45,28 +46,47 @@ def _save_state(path: Path, state: dict) -> None:
         pass
 
 
-def fetch_remote_commit_sha(
+def fetch_remote_commit_info(
     repo_slug: str = REPO_SLUG,
     branch: str = REPO_BRANCH,
-    timeout: float = 2.5,
-) -> str | None:
-    """Fetch the latest 40-char commit SHA on GitHub (40-byte response, fast timeout)."""
+    etag: str = "",
+    timeout: float = 2.0,
+) -> tuple[str, str | None, str]:
+    """Fetch latest 40-char commit SHA using conditional ETag (HTTP 304 uses 0 GitHub API rate-limit).
+
+    Returns (status, sha, new_etag) where status is 'ok', 'not_modified', or 'error'.
+    """
     url = f"https://api.github.com/repos/{repo_slug}/commits/{branch}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github.sha",
-            "User-Agent": "soulseek-batch-download-updater/1.0",
-        },
-    )
+    headers = {
+        "Accept": "application/vnd.github.sha",
+        "User-Agent": "soulseek-batch-download-updater/1.0",
+    }
+    if etag:
+        headers["If-None-Match"] = etag
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             sha = resp.read().decode("utf-8", errors="ignore").strip()
+            new_etag = str(resp.headers.get("ETag") or etag or "").strip()
             if len(sha) == 40 and all(c in "0123456789abcdefABCDEF" for c in sha):
-                return sha.lower()
+                return ("ok", sha.lower(), new_etag)
+    except urllib.error.HTTPError as err:
+        if err.code == 304:
+            return ("not_modified", None, etag)
+        return ("error", None, etag)
     except Exception:
-        return None
-    return None
+        return ("error", None, etag)
+    return ("error", None, etag)
+
+
+def fetch_remote_commit_sha(
+    repo_slug: str = REPO_SLUG,
+    branch: str = REPO_BRANCH,
+    timeout: float = 2.0,
+) -> str | None:
+    """Fetch the latest 40-char commit SHA on GitHub (40-byte response, fast timeout)."""
+    status, sha, _ = fetch_remote_commit_info(repo_slug=repo_slug, branch=branch, timeout=timeout)
+    return sha if status == "ok" else None
 
 
 def _file_sha256(path: Path) -> str:
@@ -222,7 +242,7 @@ def apply_update_from_tarball(cfg: PipelineConfig, tar_bytes: bytes) -> None:
 
 
 def check_and_apply_update(cfg: PipelineConfig, force: bool = False) -> bool:
-    """Check GitHub for a newer commit and apply it safely. Returns True if code was updated."""
+    """Check GitHub for a newer commit on every launch (via ETag 304) and apply it safely."""
     if not force:
         if os.environ.get("SLSK_NO_UPDATE") == "1" or os.environ.get("SLSK_JUST_UPDATED") == "1":
             return False
@@ -234,18 +254,28 @@ def check_and_apply_update(cfg: PipelineConfig, force: bool = False) -> bool:
     state = _load_state(state_path)
     now = time.time()
 
-    if not force and (now - float(state.get("last_check") or 0.0)) < CHECK_INTERVAL_SEC:
+    if not force and CHECK_INTERVAL_SEC > 0 and (now - float(state.get("last_check") or 0.0)) < CHECK_INTERVAL_SEC:
         return False
 
-    remote_sha = fetch_remote_commit_sha(REPO_SLUG, REPO_BRANCH)
+    local_sha = str(state.get("commit") or "").strip().lower()
+    stored_etag = str(state.get("etag") or "").strip() if local_sha else ""
+    status, remote_sha, new_etag = fetch_remote_commit_info(REPO_SLUG, REPO_BRANCH, etag=stored_etag)
     state["last_check"] = now
-    if not remote_sha:
+    if new_etag:
+        state["etag"] = new_etag
+
+    if status == "not_modified":
+        _save_state(state_path, state)
+        if force:
+            print(f"[Update] Già aggiornato all'ultima versione ({local_sha[:7]}).")
+        return False
+
+    if status != "ok" or not remote_sha:
         _save_state(state_path, state)
         if force:
             print("[Update] Impossibile contattare GitHub (offline o limite API).")
         return False
 
-    local_sha = str(state.get("commit") or "").strip().lower()
     if local_sha == remote_sha:
         _save_state(state_path, state)
         if force:

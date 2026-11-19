@@ -873,25 +873,29 @@ class AutoUpdaterTests(unittest.TestCase):
             self.assertIn('"mp3"', (root / "config" / "pipeline.json").read_text(encoding="utf-8"))
             self.assertIn("echo updated", (root / "Soulseek Batch Pipeline.command").read_text(encoding="utf-8"))
 
-    def test_updater_skips_git_repo_and_respects_cooldown(self) -> None:
+    def test_updater_skips_git_repo_and_checks_every_launch_via_etag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".git").mkdir()
             cfg = load_config(root / "config" / "pipeline.json")
             cfg.project_root = root
 
-            with patch("updater.fetch_remote_commit_sha") as mock_fetch:
+            with patch("updater.fetch_remote_commit_info") as mock_fetch:
                 self.assertFalse(check_and_apply_update(cfg, force=False))
                 mock_fetch.assert_not_called()
 
-            # Remove .git -> non-git friend install respects 6h cooldown
+            # Remove .git -> non-git friend install checks on EVERY launch using conditional ETag (304 = 0 quota)
             (root / ".git").rmdir()
             state_file = root / "config" / ".update_state.json"
             state_file.parent.mkdir(parents=True, exist_ok=True)
-            state_file.write_text(f'{{"commit": "{"a" * 40}", "last_check": {time.time()}}}\n', encoding="utf-8")
-            with patch("updater.fetch_remote_commit_sha") as mock_fetch:
+            state_file.write_text(
+                f'{{"commit": "{"a" * 40}", "etag": "W/\\"abc\\"", "last_check": {time.time()}}}\n',
+                encoding="utf-8",
+            )
+            with patch("updater.fetch_remote_commit_info", return_value=("not_modified", None, 'W/"abc"')) as mock_fetch:
                 self.assertFalse(check_and_apply_update(cfg, force=False))
-                mock_fetch.assert_not_called()
+                mock_fetch.assert_called_once()
+                self.assertEqual(mock_fetch.call_args.kwargs.get("etag"), 'W/"abc"')
 
 
 if __name__ == "__main__":
