@@ -26,7 +26,8 @@ L'installer scarica automaticamente tutto in `~/Applications/Soulseek Batch Down
 
 ## Funzionalità
 
-- **Setup solo al primo avvio con Finder `Sfoglia…`**: credenziali, cartella di download e formato di conversione si configurano una sola volta. Le esecuzioni successive partono subito senza alcuna finestra aggiuntiva (puoi riaprire il setup quando vuoi con `--setup`).
+- **Setup credenziali e cartella solo al primo avvio (Finder `Sfoglia…`)**: username, password e cartella di download si configurano una sola volta (puoi riaprirli quando vuoi con `--setup`).
+- **Scelta formato di conversione ad ogni download**: per qualsiasi link **Spotify** o **YouTube** (playlist, full album o brano singolo) compare il box compatto di conversione (`Nessuna`, `AIFF 24-bit`, `MP3 320 kbps`) già preimpostato sull'ultima scelta usata.
 - **Spotify**: playlist pubbliche, full album e tracce singole (funziona out-of-the-box senza API key grazie al fallback Embed pubblico; opzionalmente supporta anche API key in `config/pipeline.json` per playlist da >100 brani).
 - **YouTube & YouTube Music**: playlist, playlist album (`OLAK5uy_...` / `browse/MPREb_...`), video full album (estrae tracklist da capitoli e descrizione) e brani singoli.
   - Supporta **MiniCPM5-2B-MLX** con adapter LoRA fine-tuned su Apple Silicon Metal (`1.3 GB`, 0 MB in idle), **Ollama** on-demand (preferendo `minicpm5-2b` prima di `qwen2.5`, con `keep_alive: 0`) e **parser locale integrato** zero-dipendenze se nessun LLM locale è presente.

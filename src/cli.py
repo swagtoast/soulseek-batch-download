@@ -17,10 +17,27 @@ if str(SRC_DIR) not in sys.path:
 from config import PipelineConfig, load_config, normalize_convert_format, save_convert_preference
 from downloader import download_collection
 from models import CollectionExport
-from setup_ui import ensure_configured
+from setup_ui import ensure_configured, is_first_run_needed
 from spotify_extractor import extract_spotify
 from url_utils import classify_url
 from youtube_extractor import extract_youtube
+
+
+_KIND_LABELS = {
+    "spotify_playlist": "Playlist Spotify rilevata",
+    "spotify_album": "Full Album Spotify rilevato",
+    "spotify_track": "Brano Spotify rilevato",
+    "youtube_playlist": "Playlist / Album YouTube rilevato",
+    "youtube_video": "Video / Full Album YouTube rilevato",
+}
+
+
+def _describe_source_url(raw_input: str) -> str:
+    try:
+        parsed = classify_url(raw_input)
+        return _KIND_LABELS.get(parsed.kind, "Link rilevato")
+    except Exception:
+        return "Link rilevato"
 
 
 def extract_collection(raw_input: str, cfg: PipelineConfig) -> CollectionExport:
@@ -67,10 +84,13 @@ def _prompt_with_gui(
     cfg: PipelineConfig,
     url: str | None,
     default_format: str,
+    label: str | None = None,
 ) -> tuple[bool, str, str] | None:
     extra_args = ["--default-format", normalize_convert_format(default_format)]
     if url:
         extra_args.extend(["--url", url])
+    if label:
+        extra_args.extend(["--label", label])
 
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
         cmd = [str(cfg.prompt_bin), *extra_args]
@@ -142,14 +162,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_config()
+    did_first_run_setup = False
 
     # First-run-only setup (Soulseek credentials + Finder "Sfoglia..." folder picker).
     if args.setup or not args.export_only:
+        was_unconfigured = is_first_run_needed(cfg)
         updated_cfg = ensure_configured(cfg, force_setup=args.setup, no_gui=args.no_gui)
         if updated_cfg is None:
             print("Configurazione iniziale annullata.")
             return 0
         cfg = updated_cfg
+        did_first_run_setup = was_unconfigured or args.setup
         if args.setup and not args.url:
             return 0
 
@@ -178,6 +201,23 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
     elif args.convert_format is not None:
         save_convert_preference(cfg, convert_format)
+    elif not args.export_only and not did_first_run_setup and _can_use_gui_prompt(cfg, args.no_gui):
+        # Show the conversion format box (Nessuna / AIFF 24-bit / MP3 320 kbps) for every download
+        # (Spotify or YouTube, playlist or album or track) unless explicit CLI --convert* or --no-gui was passed.
+        gui_res = _prompt_with_gui(
+            cfg,
+            raw_input,
+            convert_format,
+            label=_describe_source_url(raw_input),
+        )
+        if gui_res is not None:
+            confirmed, chosen_url, chosen_convert = gui_res
+            if not confirmed:
+                print("Operazione annullata.")
+                return 0
+            raw_input = chosen_url or raw_input
+            convert_format = chosen_convert
+            save_convert_preference(cfg, convert_format)
 
     try:
         export = extract_collection(raw_input, cfg)

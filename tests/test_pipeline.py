@@ -14,6 +14,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+import cli
 from config import load_config
 from converter import convert_downloaded_flacs, convert_downloaded_flacs_to_aiff
 from downloader import download_collection, write_tracks_csv
@@ -303,6 +304,41 @@ class FirstRunSetupTests(unittest.TestCase):
             self.assertTrue(is_first_run_needed(cfg))
             write_setup_configs(cfg, "real_user", "real_pass", root / "Music", False)
             self.assertFalse(is_first_run_needed(cfg))
+
+    def test_conversion_box_shown_for_spotify_and_youtube_playlists_and_albums(self) -> None:
+        cases = [
+            ("https://open.spotify.com/playlist/4rnleEAOdmFAbRcNCgZMpY", "Playlist Spotify rilevata", "aiff"),
+            ("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", "Full Album Spotify rilevato", "mp3"),
+            ("https://www.youtube.com/playlist?list=PLGyZUTYD4yVA", "Playlist / Album YouTube rilevato", "mp3"),
+            ("https://www.youtube.com/watch?v=ZIHFT1YLmgg", "Video / Full Album YouTube rilevato", "aiff"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.sockseek_conf = root / "config" / "sockseek.conf"
+            cfg.config_file = root / "config" / "pipeline.json"
+            write_setup_configs(cfg, "user_ok", "pass_ok", root / "Music", "none")
+            cfg = load_config(cfg.config_file)
+            cfg.sockseek_conf = root / "config" / "sockseek.conf"
+
+            fake_export = CollectionExport(
+                kind="playlist",
+                name="Sample",
+                tracks=[Track(artist="A", title="B")],
+            )
+            for url, expected_label, chosen_fmt in cases:
+                with patch("cli.load_config", return_value=cfg):
+                    with patch("cli.is_first_run_needed", return_value=False):
+                        with patch("cli.ensure_configured", return_value=cfg):
+                            with patch("cli._can_use_gui_prompt", return_value=True):
+                                with patch("cli._prompt_with_gui", return_value=(True, url, chosen_fmt)) as mock_prompt:
+                                    with patch("cli.extract_collection", return_value=fake_export):
+                                        with patch("cli.download_collection", return_value=0) as mock_dl:
+                                            rc = cli.main([url])
+                self.assertEqual(rc, 0)
+                mock_prompt.assert_called_once()
+                self.assertEqual(mock_prompt.call_args.kwargs.get("label"), expected_label)
+                self.assertEqual(mock_dl.call_args.kwargs.get("convert_format"), chosen_fmt)
 
 
 class DownloaderAndConverterTests(unittest.TestCase):

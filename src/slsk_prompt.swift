@@ -19,6 +19,7 @@ func normalizeFormat(_ raw: String) -> String {
 }
 
 var prefilledURL: String?
+var urlLabel: String?
 var defaultFormat = "none"
 var idx = 1
 let args = CommandLine.arguments
@@ -26,6 +27,9 @@ while idx < args.count {
     let arg = args[idx]
     if arg == "--url", idx + 1 < args.count {
         prefilledURL = args[idx + 1]
+        idx += 2
+    } else if arg == "--label", idx + 1 < args.count {
+        urlLabel = args[idx + 1]
         idx += 2
     } else if arg == "--default-format", idx + 1 < args.count {
         defaultFormat = normalizeFormat(args[idx + 1])
@@ -60,7 +64,8 @@ alert.messageText = "Soulseek Batch Download"
 
 let needsInput = (prefilledURL == nil || prefilledURL?.isEmpty == true)
 if let url = prefilledURL, !url.isEmpty {
-    alert.informativeText = "Link rilevato:\n\(url)"
+    let heading = (urlLabel?.isEmpty == false) ? urlLabel! : "Link rilevato"
+    alert.informativeText = "\(heading):\n\(url)"
 } else {
     alert.informativeText = "Incolla un URL Spotify o YouTube (playlist, album o video full album):"
 }

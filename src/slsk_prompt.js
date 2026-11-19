@@ -32,10 +32,13 @@ function clipboardMusicURL() {
 
 function run(argv) {
   var prefilledURL = "";
+  var urlLabel = "";
   var defaultFormat = "none";
   for (var i = 0; i < argv.length; i++) {
     if (argv[i] === "--url" && i + 1 < argv.length) {
       prefilledURL = argv[++i];
+    } else if (argv[i] === "--label" && i + 1 < argv.length) {
+      urlLabel = argv[++i];
     } else if ((argv[i] === "--default-format" || argv[i] === "--default-convert") && i + 1 < argv.length) {
       defaultFormat = normalizeFormat(argv[++i]);
     }
@@ -53,7 +56,8 @@ function run(argv) {
     alert.informativeText =
       "Incolla un URL Spotify o YouTube (playlist, album o video full album):";
   } else {
-    alert.informativeText = "Link rilevato:\n" + prefilledURL;
+    var heading = urlLabel || "Link rilevato";
+    alert.informativeText = heading + ":\n" + prefilledURL;
   }
 
   alert.addButtonWithTitle("Scarica");
