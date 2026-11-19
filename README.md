@@ -13,7 +13,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/swagtoast/soulseek-batch-dow
 Al termine dell'installazione si apre automaticamente (e **solo al primo avvio**) la finestra nativa macOS dove inserire:
 - **Username** e **Password** Soulseek (salvati in locale con permessi `600`, solo proprietario)
 - **Cartella di download**, scegliendola direttamente dal Finder con il pulsante **Sfoglia…**
-- **Formato**: menu a tendina `.flac (lossless)`, `.aiff (PCM 24-bit lossless)` o `.mp3 (320 kbps)` + checkbox **`elimina file originale`** (con `.flac` la conversione viene saltata automaticamente)
+- **Formato**: menu a tendina unico `.flac (lossless)`, `.aiff (PCM 24-bit lossless)` o `.mp3 (320 kbps)` (con `.mp3` cerca prima MP3 320 kbps leggeri su Soulseek; in caso di conversione elimina in automatico il `.flac` originale; con `.flac` salta la conversione)
 
 In tutte le sessioni successive non dovrai scegliere più nulla!
 
@@ -29,7 +29,8 @@ L'installer scarica automaticamente tutto in `~/Applications/Soulseek Batch Down
 - **Auto-aggiornamento automatico**: ogni 6 ore (o su richiesta con `--update`) controlla GitHub in modo leggero (40 byte, timeout 2,5s) e aggiorna da solo gli script preservando credenziali, configurazioni, download e icone personalizzate (disattivabile con `--no-update`).
 - **Auto-ottimizzazione per ogni Mac**: rileva automaticamente architettura (`Apple Silicon` / `Intel`), RAM, core CPU e versione macOS per scegliere l'interfaccia nativa più veloce (finestra AppKit Swift su Apple Silicon/Mac potenti, dialog nativi macOS a 0% CPU e zero compilazione su Mac Intel più leggeri), calibrare i thread `yt-dlp` ed evitare di caricare modelli LLM troppo pesanti su Mac da 8 GB di RAM.
 - **Setup credenziali e cartella solo al primo avvio (Finder `Sfoglia…`)**: username, password e cartella di download si configurano una sola volta (puoi riaprirli quando vuoi con `--setup`).
-- **Scelta formato ad ogni download**: per qualsiasi link **Spotify** o **YouTube** (playlist, full album o brano singolo) compare il box compatto **`formato`** (`.flac (lossless)`, `.aiff (PCM 24-bit lossless)`, `.mp3 (320 kbps)`) con checkbox **`elimina file originale`**, preimpostato sull'ultima scelta usata.
+- **Scelta formato in un'unica finestra ad ogni download**: per qualsiasi link **Spotify** o **YouTube** (playlist, full album o brano singolo) compare una sola finestra compatta **`formato`** (`.flac (lossless)`, `.aiff (PCM 24-bit lossless)`, `.mp3 (320 kbps)`). Se scegli `.mp3`, `sockseek` cerca preferibilmente MP3 320 kbps leggeri invece dei FLAC; se scarica un `.flac` da convertire, elimina il file originale automaticamente.
+- **Cartelle pulite (solo file audio)**: disabilita `_index.csv` e rimuove immediatamente eventuali file non audio scaricati con gli album (`.jpg`, `.png`, `.nfo`, `.txt`, `.log`, `.cue`, cartelle `Artwork/` vuote, ecc.).
 - **Spotify**: playlist pubbliche, full album e tracce singole (funziona out-of-the-box senza API key grazie al fallback Embed pubblico; opzionalmente supporta anche API key in `config/pipeline.json` per playlist da >100 brani).
 - **YouTube & YouTube Music**: playlist, playlist album (`OLAK5uy_...` / `browse/MPREb_...`), video full album (estrae tracklist da capitoli e descrizione) e brani singoli.
   - Supporta **MiniCPM5-2B-MLX** con adapter LoRA fine-tuned su Apple Silicon Metal (`1.3 GB`, 0 MB in idle), **Ollama** on-demand (preferendo `minicpm5-2b` prima di `qwen2.5`, con `keep_alive: 0`) e **parser locale integrato** zero-dipendenze se nessun LLM locale è presente.

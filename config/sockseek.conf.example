@@ -7,4 +7,4 @@ pref-min-bitrate = 320
 length-tol = 5
 pref-length-tol = 5
 fast-search = true
-write-index = true
+write-index = false

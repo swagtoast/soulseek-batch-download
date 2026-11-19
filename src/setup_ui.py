@@ -75,7 +75,7 @@ def write_setup_configs(
         "length-tol = 5\n"
         "pref-length-tol = 5\n"
         "fast-search = true\n"
-        "write-index = true\n",
+        "write-index = false\n",
         encoding="utf-8",
     )
     os.chmod(cfg.sockseek_conf, 0o600)
@@ -182,7 +182,7 @@ def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | No
         'set opts to {".flac (lossless)", ".aiff (PCM 24-bit lossless)", ".mp3 (320 kbps)"}\n'
         f'set c to choose from list opts with title "Soulseek Batch Download" '
         f'with prompt "formato" default items {{"{default_item}"}} '
-        f'OK button name "Avanti" cancel button name "Annulla"\n'
+        f'OK button name "Salva e avvia" cancel button name "Annulla"\n'
         'if c is false then error number -128\n'
         'return item 1 of c'
     )
@@ -190,27 +190,13 @@ def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | No
         return {"confirmed": False}
     chosen_fmt = fmt_map.get(chosen_fmt_label, "flac")
 
-    delete_orig = cfg.delete_original
-    if chosen_fmt in {"aiff", "mp3"}:
-        def_btn = "Elimina file originale" if delete_orig else "Mantieni originale"
-        rc, btn = _run_osascript(
-            'set r to display dialog "Vuoi eliminare il file .flac originale dopo la conversione?" '
-            'with title "Soulseek Batch Download — formato" '
-            f'buttons {{"Annulla", "Mantieni originale", "Elimina file originale"}} '
-            f'default button "{def_btn}"\n'
-            'return button returned of r'
-        )
-        if rc != 0:
-            return {"confirmed": False}
-        delete_orig = btn == "Elimina file originale"
-
     return {
         "confirmed": True,
         "username": username,
         "password": password,
         "output_dir": chosen_dir,
         "convert_format": chosen_fmt,
-        "delete_original": delete_orig,
+        "delete_original": True,
     }
 
 
@@ -225,8 +211,6 @@ def _run_gui_setup(cfg: PipelineConfig) -> dict | None:
             str(cfg.output_dir),
             "--default-format",
             cfg.convert_format,
-            "--default-delete",
-            "true" if cfg.delete_original else "false",
         ]
         if existing_user:
             extra_args.extend(["--default-user", existing_user])

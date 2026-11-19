@@ -110,10 +110,9 @@ def _clipboard_music_url() -> str:
 def _prompt_with_applescript(
     url: str | None,
     default_format: str,
-    default_delete: bool = True,
     label: str | None = None,
-) -> tuple[bool, str, str, bool]:
-    """Universal zero-CPU StandardAdditions macOS dialogs (works on all Intel & Apple Silicon Macs)."""
+) -> tuple[bool, str, str]:
+    """Universal zero-CPU StandardAdditions macOS single-window format picker (all Intel & Apple Silicon Macs)."""
     final_url = (url or "").strip()
     if not final_url:
         clip = _as_escape(_clipboard_music_url())
@@ -124,7 +123,7 @@ def _prompt_with_applescript(
             f'return text returned of r'
         )
         if rc != 0 or not entered.strip():
-            return (False, "", default_format, default_delete)
+            return (False, "", default_format)
         final_url = entered.strip()
 
     items = [
@@ -147,40 +146,18 @@ def _prompt_with_applescript(
         'return item 1 of c'
     )
     if rc != 0 or not chosen_label:
-        return (False, final_url, default_format, default_delete)
-    chosen_fmt = fmt_map.get(chosen_label, "flac")
-
-    chosen_delete = default_delete
-    if chosen_fmt in {"aiff", "mp3"}:
-        def_btn = "Elimina file originale" if default_delete else "Mantieni originale"
-        rc, btn = _run_osascript(
-            'set r to display dialog "Eliminare il file .flac originale dopo la conversione?" '
-            'with title "Soulseek Batch Download" '
-            f'buttons {{"Annulla", "Mantieni originale", "Elimina file originale"}} '
-            f'default button "{def_btn}"\n'
-            'return button returned of r'
-        )
-        if rc != 0:
-            return (False, final_url, chosen_fmt, default_delete)
-        chosen_delete = btn == "Elimina file originale"
-
-    return (True, final_url, chosen_fmt, chosen_delete)
+        return (False, final_url, default_format)
+    return (True, final_url, fmt_map.get(chosen_label, "flac"))
 
 
 def _prompt_with_gui(
     cfg: PipelineConfig,
     url: str | None,
     default_format: str,
-    default_delete: bool = True,
     label: str | None = None,
-) -> tuple[bool, str, str, bool] | None:
+) -> tuple[bool, str, str] | None:
     if cfg.prompt_bin.is_file() and os.access(cfg.prompt_bin, os.X_OK):
-        extra_args = [
-            "--default-format",
-            normalize_convert_format(default_format),
-            "--default-delete",
-            "true" if default_delete else "false",
-        ]
+        extra_args = ["--default-format", normalize_convert_format(default_format)]
         if url:
             extra_args.extend(["--url", url])
         if label:
@@ -189,7 +166,7 @@ def _prompt_with_gui(
         proc = subprocess.run([str(cfg.prompt_bin), *extra_args], capture_output=True, text=True, check=False)
         raw = (proc.stdout or "").strip()
         if not raw:
-            return None if proc.returncode != 0 else (False, "", default_format, default_delete)
+            return None if proc.returncode != 0 else (False, "", default_format)
         try:
             data = json.loads(raw)
             raw_fmt = data.get("convert_format", data.get("convert_flac_to_aiff", default_format))
@@ -197,13 +174,12 @@ def _prompt_with_gui(
                 bool(data.get("confirmed")),
                 str(data.get("url") or ""),
                 normalize_convert_format(raw_fmt),
-                bool(data.get("delete_original", default_delete)),
             )
         except json.JSONDecodeError:
             return None
 
     if sys.platform == "darwin" and Path("/usr/bin/osascript").is_file():
-        return _prompt_with_applescript(url, default_format, default_delete=default_delete, label=label)
+        return _prompt_with_applescript(url, default_format, label=label)
     return None
 
 
@@ -302,51 +278,46 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_input = args.url
     convert_format = cfg.convert_format if args.convert_format is None else normalize_convert_format(args.convert_format)
-    delete_original = cfg.delete_original if args.delete_original is None else bool(args.delete_original)
     interactive = False
 
     if not raw_input:
         interactive = True
         gui_res = None
         if _can_use_gui_prompt(cfg, args.no_gui) and not args.export_only:
-            gui_res = _prompt_with_gui(cfg, None, convert_format, default_delete=delete_original)
+            gui_res = _prompt_with_gui(cfg, None, convert_format)
         if gui_res is not None:
-            confirmed, chosen_url, chosen_convert, chosen_delete = gui_res
+            confirmed, chosen_url, chosen_convert = gui_res
             if not confirmed:
                 print("Operazione annullata.")
                 return 0
             raw_input = chosen_url
             if args.convert_format is None:
                 convert_format = chosen_convert
-            if args.delete_original is None:
-                delete_original = chosen_delete
-            save_convert_preference(cfg, convert_format, delete_original)
+            save_convert_preference(cfg, convert_format, True)
         else:
             try:
                 raw_input = input("Incolla URL Spotify o YouTube (playlist / album / video full album): ").strip()
             except EOFError:
                 return 1
-    elif args.convert_format is not None or args.delete_original is not None:
-        save_convert_preference(cfg, convert_format, delete_original)
+    elif args.convert_format is not None:
+        save_convert_preference(cfg, convert_format, True)
     elif not args.export_only and not did_first_run_setup and _can_use_gui_prompt(cfg, args.no_gui):
-        # Show format selector (.flac / .aiff / .mp3) + delete_original checkbox for every download
+        # Single-window format selector (.flac / .aiff / .mp3) for every download
         # (Spotify or YouTube, playlist or album or track) unless explicit CLI flags or --no-gui were passed.
         gui_res = _prompt_with_gui(
             cfg,
             raw_input,
             convert_format,
-            default_delete=delete_original,
             label=_describe_source_url(raw_input),
         )
         if gui_res is not None:
-            confirmed, chosen_url, chosen_convert, chosen_delete = gui_res
+            confirmed, chosen_url, chosen_convert = gui_res
             if not confirmed:
                 print("Operazione annullata.")
                 return 0
             raw_input = chosen_url or raw_input
             convert_format = chosen_convert
-            delete_original = chosen_delete
-            save_convert_preference(cfg, convert_format, delete_original)
+            save_convert_preference(cfg, convert_format, True)
 
     try:
         export = extract_collection(raw_input, cfg)
@@ -357,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             export_only=args.export_only,
             force_mode=args.mode,
             convert_format=convert_format,
-            delete_original=delete_original,
+            delete_original=True,
             open_finder=not args.no_finder,
         )
     except KeyboardInterrupt:

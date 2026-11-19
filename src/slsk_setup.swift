@@ -7,7 +7,6 @@ struct SetupResult: Codable {
     let password: String
     let output_dir: String
     let convert_format: String
-    let delete_original: Bool
 }
 
 func normalizeFormat(_ raw: String) -> String {
@@ -21,15 +20,9 @@ func normalizeFormat(_ raw: String) -> String {
     }
 }
 
-func parseBool(_ raw: String) -> Bool {
-    let v = raw.lowercased()
-    return v == "1" || v == "true" || v == "yes"
-}
-
 var defaultDir = (NSHomeDirectory() as NSString).appendingPathComponent("Music/Soulseek Downloads")
 var defaultUser = ""
 var defaultFormat = "flac"
-var defaultDelete = true
 
 let args = CommandLine.arguments
 var idx = 1
@@ -47,9 +40,6 @@ while idx < args.count {
     } else if arg == "--default-convert", idx + 1 < args.count {
         defaultFormat = normalizeFormat(args[idx + 1])
         idx += 2
-    } else if arg == "--default-delete", idx + 1 < args.count {
-        defaultDelete = parseBool(args[idx + 1])
-        idx += 2
     } else {
         idx += 1
     }
@@ -61,14 +51,13 @@ final class SetupController: NSObject, NSWindowDelegate {
     let passField: NSSecureTextField
     let dirField: NSTextField
     let formatPopup: NSPopUpButton
-    let deleteCheck: NSButton
     let errorLabel: NSTextField
     let formatKeys = ["flac", "aiff", "mp3"]
     var confirmed = false
 
-    init(defaultUser: String, defaultDir: String, defaultFormat: String, defaultDelete: Bool) {
+    init(defaultUser: String, defaultDir: String, defaultFormat: String) {
         let width: CGFloat = 520
-        let height: CGFloat = 398
+        let height: CGFloat = 368
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
@@ -80,11 +69,10 @@ final class SetupController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.center()
 
-        userField = NSTextField(frame: NSRect(x: 24, y: 268, width: width - 48, height: 24))
-        passField = NSSecureTextField(frame: NSRect(x: 24, y: 210, width: width - 48, height: 24))
-        dirField = NSTextField(frame: NSRect(x: 24, y: 152, width: width - 144, height: 24))
-        formatPopup = NSPopUpButton(frame: NSRect(x: 24, y: 92, width: width - 48, height: 26), pullsDown: false)
-        deleteCheck = NSButton(checkboxWithTitle: "elimina file originale", target: nil, action: nil)
+        userField = NSTextField(frame: NSRect(x: 24, y: 238, width: width - 48, height: 24))
+        passField = NSSecureTextField(frame: NSRect(x: 24, y: 180, width: width - 48, height: 24))
+        dirField = NSTextField(frame: NSRect(x: 24, y: 122, width: width - 144, height: 24))
+        formatPopup = NSPopUpButton(frame: NSRect(x: 24, y: 60, width: width - 48, height: 26), pullsDown: false)
         errorLabel = NSTextField(labelWithString: "")
 
         super.init()
@@ -94,7 +82,7 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         let title = NSTextField(labelWithString: "Benvenuto! Configura il tuo account Soulseek")
         title.font = NSFont.boldSystemFont(ofSize: 15)
-        title.frame = NSRect(x: 24, y: 360, width: width - 48, height: 22)
+        title.frame = NSRect(x: 24, y: 330, width: width - 48, height: 22)
         content.addSubview(title)
 
         let subtitle = NSTextField(
@@ -104,12 +92,12 @@ final class SetupController: NSObject, NSWindowDelegate {
         subtitle.textColor = .secondaryLabelColor
         subtitle.lineBreakMode = .byWordWrapping
         subtitle.maximumNumberOfLines = 2
-        subtitle.frame = NSRect(x: 24, y: 322, width: width - 48, height: 34)
+        subtitle.frame = NSRect(x: 24, y: 292, width: width - 48, height: 34)
         content.addSubview(subtitle)
 
         let userLabel = NSTextField(labelWithString: "Username Soulseek:")
         userLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        userLabel.frame = NSRect(x: 24, y: 296, width: width - 48, height: 16)
+        userLabel.frame = NSRect(x: 24, y: 266, width: width - 48, height: 16)
         content.addSubview(userLabel)
         userField.stringValue = defaultUser
         userField.placeholderString = "Il tuo username Soulseek"
@@ -117,14 +105,14 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         let passLabel = NSTextField(labelWithString: "Password Soulseek:")
         passLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        passLabel.frame = NSRect(x: 24, y: 238, width: width - 48, height: 16)
+        passLabel.frame = NSRect(x: 24, y: 208, width: width - 48, height: 16)
         content.addSubview(passLabel)
         passField.placeholderString = "La tua password Soulseek"
         content.addSubview(passField)
 
         let dirLabel = NSTextField(labelWithString: "Cartella di download:")
         dirLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        dirLabel.frame = NSRect(x: 24, y: 180, width: width - 48, height: 16)
+        dirLabel.frame = NSRect(x: 24, y: 150, width: width - 48, height: 16)
         content.addSubview(dirLabel)
         dirField.stringValue = defaultDir
         dirField.placeholderString = defaultDir
@@ -132,12 +120,12 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         let browseBtn = NSButton(title: "Sfoglia…", target: self, action: #selector(didTapBrowse))
         browseBtn.bezelStyle = .rounded
-        browseBtn.frame = NSRect(x: width - 112, y: 149, width: 88, height: 28)
+        browseBtn.frame = NSRect(x: width - 112, y: 119, width: 88, height: 28)
         content.addSubview(browseBtn)
 
         let formatLabel = NSTextField(labelWithString: "formato")
         formatLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        formatLabel.frame = NSRect(x: 24, y: 122, width: width - 48, height: 16)
+        formatLabel.frame = NSRect(x: 24, y: 90, width: width - 48, height: 16)
         content.addSubview(formatLabel)
 
         formatPopup.addItems(withTitles: [
@@ -148,15 +136,7 @@ final class SetupController: NSObject, NSWindowDelegate {
         if let selIdx = formatKeys.firstIndex(of: defaultFormat) {
             formatPopup.selectItem(at: selIdx)
         }
-        formatPopup.target = self
-        formatPopup.action = #selector(didChangeFormat)
         content.addSubview(formatPopup)
-
-        deleteCheck.state = defaultDelete ? .on : .off
-        deleteCheck.font = NSFont.systemFont(ofSize: 12)
-        deleteCheck.frame = NSRect(x: 24, y: 60, width: width - 48, height: 22)
-        content.addSubview(deleteCheck)
-        updateDeleteCheckboxState()
 
         errorLabel.font = NSFont.systemFont(ofSize: 11.5)
         errorLabel.textColor = .systemRed
@@ -177,15 +157,6 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         window.contentView = content
         window.initialFirstResponder = userField
-    }
-
-    @objc func didChangeFormat() {
-        updateDeleteCheckboxState()
-    }
-
-    func updateDeleteCheckboxState() {
-        let sel = max(0, min(formatPopup.indexOfSelectedItem, formatKeys.count - 1))
-        deleteCheck.isEnabled = (formatKeys[sel] != "flac")
     }
 
     @objc func didTapBrowse() {
@@ -261,8 +232,7 @@ final class SetupController: NSObject, NSWindowDelegate {
             username: userField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
             password: passField.stringValue,
             output_dir: expandedDir,
-            convert_format: formatKeys[sel],
-            delete_original: deleteCheck.state == .on
+            convert_format: formatKeys[sel]
         )
     }
 }
@@ -272,8 +242,7 @@ app.setActivationPolicy(.accessory)
 let controller = SetupController(
     defaultUser: defaultUser,
     defaultDir: defaultDir,
-    defaultFormat: defaultFormat,
-    defaultDelete: defaultDelete
+    defaultFormat: defaultFormat
 )
 let result = controller.run()
 if let data = try? JSONEncoder().encode(result), let json = String(data: data, encoding: .utf8) {

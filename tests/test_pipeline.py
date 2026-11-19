@@ -343,10 +343,10 @@ class FirstRunSetupTests(unittest.TestCase):
 
     def test_conversion_box_shown_for_spotify_and_youtube_playlists_and_albums(self) -> None:
         cases = [
-            ("https://open.spotify.com/playlist/4rnleEAOdmFAbRcNCgZMpY", "Playlist Spotify rilevata", "aiff", True),
-            ("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", "Full Album Spotify rilevato", "mp3", False),
-            ("https://www.youtube.com/playlist?list=PLGyZUTYD4yVA", "Playlist / Album YouTube rilevato", "mp3", True),
-            ("https://www.youtube.com/watch?v=ZIHFT1YLmgg", "Video / Full Album YouTube rilevato", "flac", True),
+            ("https://open.spotify.com/playlist/4rnleEAOdmFAbRcNCgZMpY", "Playlist Spotify rilevata", "aiff"),
+            ("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", "Full Album Spotify rilevato", "mp3"),
+            ("https://www.youtube.com/playlist?list=PLGyZUTYD4yVA", "Playlist / Album YouTube rilevato", "mp3"),
+            ("https://www.youtube.com/watch?v=ZIHFT1YLmgg", "Video / Full Album YouTube rilevato", "flac"),
         ]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -362,14 +362,14 @@ class FirstRunSetupTests(unittest.TestCase):
                 name="Sample",
                 tracks=[Track(artist="A", title="B")],
             )
-            for url, expected_label, chosen_fmt, chosen_del in cases:
+            for url, expected_label, chosen_fmt in cases:
                 with patch("cli.load_config", return_value=cfg):
                     with patch("cli.is_first_run_needed", return_value=False):
                         with patch("cli.ensure_configured", return_value=cfg):
                             with patch("cli._can_use_gui_prompt", return_value=True):
                                 with patch(
                                     "cli._prompt_with_gui",
-                                    return_value=(True, url, chosen_fmt, chosen_del),
+                                    return_value=(True, url, chosen_fmt),
                                 ) as mock_prompt:
                                     with patch("cli.extract_collection", return_value=fake_export):
                                         with patch("cli.download_collection", return_value=0) as mock_dl:
@@ -378,7 +378,7 @@ class FirstRunSetupTests(unittest.TestCase):
                 mock_prompt.assert_called_once()
                 self.assertEqual(mock_prompt.call_args.kwargs.get("label"), expected_label)
                 self.assertEqual(mock_dl.call_args.kwargs.get("convert_format"), chosen_fmt)
-                self.assertEqual(mock_dl.call_args.kwargs.get("delete_original"), chosen_del)
+                self.assertTrue(mock_dl.call_args.kwargs.get("delete_original"))
 
 
 class DownloaderAndConverterTests(unittest.TestCase):
@@ -633,6 +633,62 @@ class DownloaderAndConverterTests(unittest.TestCase):
             self.assertEqual(res_keep, (1, 0))
             self.assertTrue(flac_file.is_file())
             self.assertTrue(flac_file.with_suffix(".mp3").is_file())
+
+    def test_mp3_format_prefers_mp3_320_and_cleans_all_non_audio_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config()
+            cfg.output_dir = root / "downloads"
+            cfg.lists_dir = root / "lists"
+            cfg.sockseek_bin = root / "sockseek"
+            cfg.sockseek_conf = root / "sockseek.conf"
+            cfg.sockseek_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+            cfg.sockseek_conf.write_text("username=x\n", encoding="utf-8")
+            cfg.output_dir.mkdir(parents=True, exist_ok=True)
+            preexisting = cfg.output_dir / "keep_old_note.txt"
+            preexisting.write_text("untouched", encoding="utf-8")
+
+            export = CollectionExport(
+                kind="playlist",
+                name="Clean Audio Only",
+                tracks=[Track(artist="Tester", title="Song One")],
+            )
+            pl_dir = cfg.output_dir / "Clean Audio Only"
+            seen_cmds: list[list[str]] = []
+
+            def fake_run(cmd: list[str]) -> int:
+                seen_cmds.append(cmd)
+                pl_dir.mkdir(parents=True, exist_ok=True)
+                (pl_dir / "01 - Song One.mp3").write_bytes(b"FAKE_MP3")
+                (pl_dir / "cover.jpg").write_bytes(b"JUNK")
+                (pl_dir / "info.nfo").write_text("junk", encoding="utf-8")
+                (pl_dir / "rip.log").write_text("junk", encoding="utf-8")
+                (pl_dir / "album.cue").write_text("junk", encoding="utf-8")
+                (pl_dir / "_index.csv").write_text("junk", encoding="utf-8")
+                artwork_dir = pl_dir / "Artwork"
+                artwork_dir.mkdir()
+                (artwork_dir / "back.png").write_bytes(b"JUNK")
+                return 0
+
+            with patch("downloader._run_sockseek", side_effect=fake_run):
+                with patch("downloader._open_in_finder"):
+                    rc = download_collection(export, cfg, convert_format="mp3", open_finder=True)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(seen_cmds), 1)
+            cmd = seen_cmds[0]
+            self.assertIn("--no-write-index", cmd)
+            self.assertEqual(cmd[cmd.index("--pref-format") + 1], "mp3")
+            self.assertEqual(cmd[cmd.index("--pref-min-bitrate") + 1], "320")
+            # Only audio remains in downloaded folder; all junk + empty Artwork dir deleted; preexisting untouched
+            self.assertTrue((pl_dir / "01 - Song One.mp3").is_file())
+            self.assertFalse((pl_dir / "cover.jpg").exists())
+            self.assertFalse((pl_dir / "info.nfo").exists())
+            self.assertFalse((pl_dir / "rip.log").exists())
+            self.assertFalse((pl_dir / "album.cue").exists())
+            self.assertFalse((pl_dir / "_index.csv").exists())
+            self.assertFalse((pl_dir / "Artwork").exists())
+            self.assertTrue(preexisting.is_file())
 
 
 class AutoUpdaterTests(unittest.TestCase):

@@ -15,6 +15,9 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
+# Clean up any stale legacy JXA osascript processes from older installs (e.g. Intel Air 2019).
+pkill -f "slsk_setup\.js|slsk_prompt\.js" 2>/dev/null || true
+
 ARCH="$(uname -m)"
 MACOS_VER="$(sw_vers -productVersion 2>/dev/null || echo "unknown")"
 CPU_CORES="$(sysctl -n hw.ncpu 2>/dev/null || echo 2)"
@@ -74,14 +77,28 @@ curl -fL --progress-bar "https://github.com/$REPO_SLUG/archive/refs/heads/$REPO_
 tar -xzf "$TMP_WORK/repo.tar.gz" -C "$TMP_WORK"
 SRC_ROOT="$(find "$TMP_WORK" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 
-rm -rf "$INSTALL_DIR/src" "$INSTALL_DIR/tests"
+rm -rf "$INSTALL_DIR/src" "$INSTALL_DIR/tests" "$INSTALL_DIR/assets"
 cp -R "$SRC_ROOT/src" "$INSTALL_DIR/src"
 [ -d "$SRC_ROOT/tests" ] && cp -R "$SRC_ROOT/tests" "$INSTALL_DIR/tests"
+[ -d "$SRC_ROOT/assets" ] && cp -R "$SRC_ROOT/assets" "$INSTALL_DIR/assets"
 cp "$SRC_ROOT/Soulseek Batch Pipeline.command" "$INSTALL_DIR/Soulseek Batch Pipeline.command"
 cp "$SRC_ROOT/README.md" "$INSTALL_DIR/README.md"
 [ -f "$SRC_ROOT/config/sockseek.conf.example" ] && cp "$SRC_ROOT/config/sockseek.conf.example" "$INSTALL_DIR/config/"
 [ -f "$SRC_ROOT/config/pipeline.json.example" ] && cp "$SRC_ROOT/config/pipeline.json.example" "$INSTALL_DIR/config/"
 chmod +x "$INSTALL_DIR/Soulseek Batch Pipeline.command"
+
+# Apply custom Swagtoast + Soulseek icon to Soulseek Batch Pipeline.command (synchronous NSWorkspace call, ~0.2s).
+if [ -f "$INSTALL_DIR/assets/app_icon.png" ] && [ -x "/usr/bin/osascript" ]; then
+    /usr/bin/osascript -l JavaScript -e '
+ObjC.import("AppKit");
+function run(argv) {
+  var img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+  if (img && !img.isNil()) {
+    $.NSWorkspace.sharedWorkspace.setIconForFileOptions(img, argv[1], 0);
+  }
+}
+' "$INSTALL_DIR/assets/app_icon.png" "$INSTALL_DIR/Soulseek Batch Pipeline.command" >/dev/null 2>&1 || true
+fi
 
 # Seed auto-updater state with the installed commit SHA so the very first launch doesn't re-download immediately.
 INSTALLED_SHA="$(curl -fsSL --max-time 3 -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/$REPO_SLUG/commits/$REPO_BRANCH" 2>/dev/null || true)"

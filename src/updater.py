@@ -179,7 +179,7 @@ def apply_update_from_tarball(cfg: PipelineConfig, tar_bytes: bytes) -> None:
                 shutil.rmtree(target_tests, ignore_errors=True)
             shutil.copytree(new_tests, target_tests)
 
-        for rel_name in ("README.md", "config/sockseek.conf.example", "config/pipeline.json.example"):
+        for rel_name in ("README.md", "config/sockseek.conf.example", "config/pipeline.json.example", "assets/app_icon.png"):
             src_f = extracted_root / rel_name
             if src_f.is_file():
                 dst_f = root / rel_name
@@ -192,6 +192,27 @@ def apply_update_from_tarball(cfg: PipelineConfig, tar_bytes: bytes) -> None:
             dst_cmd = root / "Soulseek Batch Pipeline.command"
             dst_cmd.write_bytes(new_cmd.read_bytes())
             dst_cmd.chmod(0o755)
+
+            icon_png = root / "assets" / "app_icon.png"
+            if sys.platform == "darwin" and icon_png.is_file() and Path("/usr/bin/osascript").is_file():
+                try:
+                    subprocess.run(
+                        [
+                            "/usr/bin/osascript",
+                            "-l",
+                            "JavaScript",
+                            "-e",
+                            'ObjC.import("AppKit"); function run(a){var i=$.NSImage.alloc.initWithContentsOfFile(a[0]); if(i&&!i.isNil())$.NSWorkspace.sharedWorkspace.setIconForFileOptions(i,a[1],0);}',
+                            str(icon_png),
+                            str(dst_cmd),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=8,
+                        check=False,
+                    )
+                except Exception:
+                    pass
 
         # Clean up any legacy JXA scripts.
         for legacy in ("slsk_setup.js", "slsk_prompt.js"):

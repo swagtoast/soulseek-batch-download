@@ -5,7 +5,6 @@ struct PromptResult: Codable {
     let confirmed: Bool
     let url: String
     let convert_format: String
-    let delete_original: Bool
 }
 
 func normalizeFormat(_ raw: String) -> String {
@@ -19,15 +18,9 @@ func normalizeFormat(_ raw: String) -> String {
     }
 }
 
-func parseBool(_ raw: String) -> Bool {
-    let v = raw.lowercased()
-    return v == "1" || v == "true" || v == "yes"
-}
-
 var prefilledURL: String?
 var urlLabel: String?
 var defaultFormat = "flac"
-var defaultDelete = true
 var idx = 1
 let args = CommandLine.arguments
 while idx < args.count {
@@ -43,9 +36,6 @@ while idx < args.count {
         idx += 2
     } else if arg == "--default-convert", idx + 1 < args.count {
         defaultFormat = normalizeFormat(args[idx + 1])
-        idx += 2
-    } else if arg == "--default-delete", idx + 1 < args.count {
-        defaultDelete = parseBool(args[idx + 1])
         idx += 2
     } else {
         idx += 1
@@ -63,28 +53,6 @@ func clipboardMusicURL() -> String? {
         return clip
     }
     return nil
-}
-
-final class FormatHandler: NSObject {
-    let formatPopup: NSPopUpButton
-    let deleteCheck: NSButton
-    let formatKeys = ["flac", "aiff", "mp3"]
-
-    init(formatPopup: NSPopUpButton, deleteCheck: NSButton) {
-        self.formatPopup = formatPopup
-        self.deleteCheck = deleteCheck
-        super.init()
-        updateState()
-    }
-
-    @objc func formatChanged(_ sender: Any?) {
-        updateState()
-    }
-
-    func updateState() {
-        let sel = max(0, min(formatPopup.indexOfSelectedItem, formatKeys.count - 1))
-        deleteCheck.isEnabled = (formatKeys[sel] != "flac")
-    }
 }
 
 let app = NSApplication.shared
@@ -111,7 +79,7 @@ let fieldWidth: CGFloat = 440
 let formatLabel = NSTextField(labelWithString: "formato")
 formatLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
 
-let formatPopup = NSPopUpButton(frame: NSRect(x: 0, y: 30, width: fieldWidth, height: 26), pullsDown: false)
+let formatPopup = NSPopUpButton(frame: NSRect(x: 0, y: 2, width: fieldWidth, height: 26), pullsDown: false)
 formatPopup.addItems(withTitles: [
     ".flac (lossless)",
     ".aiff (PCM 24-bit lossless)",
@@ -121,42 +89,29 @@ if let selIdx = formatKeys.firstIndex(of: defaultFormat) {
     formatPopup.selectItem(at: selIdx)
 }
 
-let deleteCheck = NSButton(checkboxWithTitle: "elimina file originale", target: nil, action: nil)
-deleteCheck.state = defaultDelete ? .on : .off
-deleteCheck.font = NSFont.systemFont(ofSize: 12)
-deleteCheck.frame = NSRect(x: 0, y: 2, width: fieldWidth, height: 22)
-
-let formatHandler = FormatHandler(formatPopup: formatPopup, deleteCheck: deleteCheck)
-formatPopup.target = formatHandler
-formatPopup.action = #selector(FormatHandler.formatChanged(_:))
-
 var urlField: NSTextField?
 
 if needsInput {
-    let accessory = NSView(frame: NSRect(x: 0, y: 0, width: fieldWidth, height: 114))
-    let field = NSTextField(frame: NSRect(x: 0, y: 86, width: fieldWidth, height: 24))
+    let accessory = NSView(frame: NSRect(x: 0, y: 0, width: fieldWidth, height: 86))
+    let field = NSTextField(frame: NSRect(x: 0, y: 58, width: fieldWidth, height: 24))
     field.placeholderString = "https://open.spotify.com/... oppure https://www.youtube.com/..."
     if let clip = clipboardMusicURL() {
         field.stringValue = clip
     }
-    formatLabel.frame = NSRect(x: 0, y: 60, width: fieldWidth, height: 16)
-    formatPopup.frame = NSRect(x: 0, y: 30, width: fieldWidth, height: 26)
-    deleteCheck.frame = NSRect(x: 0, y: 2, width: fieldWidth, height: 22)
+    formatLabel.frame = NSRect(x: 0, y: 32, width: fieldWidth, height: 16)
+    formatPopup.frame = NSRect(x: 0, y: 2, width: fieldWidth, height: 26)
     accessory.addSubview(field)
     accessory.addSubview(formatLabel)
     accessory.addSubview(formatPopup)
-    accessory.addSubview(deleteCheck)
     alert.accessoryView = accessory
     urlField = field
     alert.window.initialFirstResponder = field
 } else {
-    let accessory = NSView(frame: NSRect(x: 0, y: 0, width: fieldWidth, height: 80))
-    formatLabel.frame = NSRect(x: 0, y: 60, width: fieldWidth, height: 16)
-    formatPopup.frame = NSRect(x: 0, y: 30, width: fieldWidth, height: 26)
-    deleteCheck.frame = NSRect(x: 0, y: 2, width: fieldWidth, height: 22)
+    let accessory = NSView(frame: NSRect(x: 0, y: 0, width: fieldWidth, height: 52))
+    formatLabel.frame = NSRect(x: 0, y: 32, width: fieldWidth, height: 16)
+    formatPopup.frame = NSRect(x: 0, y: 2, width: fieldWidth, height: 26)
     accessory.addSubview(formatLabel)
     accessory.addSubview(formatPopup)
-    accessory.addSubview(deleteCheck)
     alert.accessoryView = accessory
 }
 
@@ -176,8 +131,7 @@ let sel = max(0, min(formatPopup.indexOfSelectedItem, formatKeys.count - 1))
 let output = PromptResult(
     confirmed: confirmed && !finalURL.isEmpty,
     url: finalURL,
-    convert_format: formatKeys[sel],
-    delete_original: deleteCheck.state == .on
+    convert_format: formatKeys[sel]
 )
 if let data = try? JSONEncoder().encode(output), let json = String(data: data, encoding: .utf8) {
     print(json)

@@ -62,6 +62,38 @@ def _new_audio_files(before: dict[Path, float], root: Path) -> list[Path]:
     return sorted(result)
 
 
+def _cleanup_non_audio_files(before_files: dict[Path, float], before_dirs: set[Path], root: Path) -> int:
+    """Immediately delete any non-audio files (covers, nfo, txt, cue, log, csv, etc.) downloaded in this session."""
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for path in list(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if path in before_files:
+            continue
+        if path.suffix.lower() not in AUDIO_EXTENSIONS:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+
+    # Remove any newly created subdirectories that are now empty (e.g. Artwork/, Scans/).
+    dirs = sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True)
+    for d in dirs:
+        if d in before_dirs:
+            continue
+        try:
+            if not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
+    if removed:
+        print(f"[Pulizia] Rimossi {removed} file non audio.")
+    return removed
+
+
 def _prune_empty_new_dirs(before_dirs: set[Path], root: Path) -> None:
     if not root.is_dir():
         return
@@ -94,10 +126,40 @@ def _platform_extra_args(export: CollectionExport) -> list[str]:
     return []
 
 
+def _format_search_args(convert_format: str) -> list[str]:
+    """Tell Sockseek to prefer lightweight MP3 320 kbps when the user chose .mp3, or lossless otherwise."""
+    fmt = normalize_convert_format(convert_format)
+    if fmt == "mp3":
+        return [
+            "--pref-format",
+            "mp3",
+            "--pref-min-bitrate",
+            "320",
+            "--format",
+            "mp3,flac,aiff,wav",
+        ]
+    if fmt == "aiff":
+        return [
+            "--pref-format",
+            "aiff,flac,wav",
+            "--pref-min-bitrate",
+            "320",
+            "--format",
+            "flac,aiff,wav,mp3",
+        ]
+    return [
+        "--pref-format",
+        "flac,aiff,wav",
+        "--pref-min-bitrate",
+        "320",
+        "--format",
+        "flac,aiff,wav,mp3",
+    ]
+
+
 def _maybe_convert(
     cfg: PipelineConfig,
     convert_format: str,
-    delete_original: bool,
     before_files: dict[Path, float],
 ) -> None:
     fmt = normalize_convert_format(convert_format)
@@ -111,7 +173,7 @@ def _maybe_convert(
         target_format=fmt,
         ffmpeg_bin=cfg.ffmpeg_bin,
         ffprobe_bin=cfg.ffprobe_bin,
-        delete_original=delete_original,
+        delete_original=True,
     )
 
 
@@ -157,8 +219,13 @@ def _execute_download(
     csv_path: Path,
     cfg: PipelineConfig,
     session_before_files: dict[Path, float],
+    convert_format: str = "flac",
 ) -> tuple[int, Path | None]:
-    extra_args = _platform_extra_args(export)
+    extra_args = [
+        "--no-write-index",
+        *_format_search_args(convert_format),
+        *_platform_extra_args(export),
+    ]
     base_cmd = [
         str(cfg.sockseek_bin),
         "-c",
@@ -293,14 +360,17 @@ def download_collection(
     )
 
     session_before_files = _snapshot_files(cfg.output_dir)
+    session_before_dirs = {p for p in cfg.output_dir.rglob("*") if p.is_dir()} if cfg.output_dir.is_dir() else set()
     rc, preferred_dir = _execute_download(
         export=export,
         effective_kind=effective_kind,
         csv_path=csv_path,
         cfg=cfg,
         session_before_files=session_before_files,
+        convert_format=effective_convert,
     )
-    _maybe_convert(cfg, effective_convert, delete_original, session_before_files)
+    _cleanup_non_audio_files(session_before_files, session_before_dirs, cfg.output_dir)
+    _maybe_convert(cfg, effective_convert, session_before_files)
     if open_finder:
         _reveal_after_download(cfg, session_before_files, preferred_dir)
     return rc
