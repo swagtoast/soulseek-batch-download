@@ -18,6 +18,7 @@ PROJECT_ROOT = SRC_DIR.parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from i18n import t  # noqa: E402
 from url_utils import classify_url, extract_url_from_text  # noqa: E402
 
 
@@ -112,7 +113,7 @@ def main() -> int:
 
         btn = tk.Button(
             win,
-            text="  ⬇ Scarica con Soulseek  ",
+            text=t("ui_pill_download"),
             bg="#18181b",
             fg="#ffffff",
             activebackground="#2563eb",

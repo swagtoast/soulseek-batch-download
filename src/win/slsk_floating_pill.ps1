@@ -122,7 +122,10 @@ public class SlskFloatingPillApp : NativeWindow, IDisposable {
             btn.BackColor = Color.FromArgb(26, 28, 36);
             btn.ForeColor = Color.White;
             btn.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            btn.Text = "  Scarica con Soulseek";
+            bool isIT = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SLSK_LANG"))
+                ? Environment.GetEnvironmentVariable("SLSK_LANG").Trim().ToLowerInvariant().StartsWith("it")
+                : System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "it";
+            btn.Text = isIT ? "  Scarica con Soulseek" : "  Download with Soulseek";
             btn.TextAlign = ContentAlignment.MiddleCenter;
             btn.Cursor = Cursors.Hand;
             if (appIcon != null) {
@@ -163,15 +166,20 @@ public class SlskFloatingPillApp : NativeWindow, IDisposable {
             CheckUiAutomationSelection();
         };
 
+        bool isIT = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SLSK_LANG"))
+            ? Environment.GetEnvironmentVariable("SLSK_LANG").Trim().ToLowerInvariant().StartsWith("it")
+            : System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "it";
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Apri Soulseek Batch Download", null, (s, e) => LaunchDownload(""));
-        menu.Items.Add("Configurazione iniziale (--setup)", null, (s, e) => LaunchSetup());
+        menu.Items.Add(isIT ? "Apri Soulseek Batch Download" : "Open Soulseek Batch Download", null, (s, e) => LaunchDownload(""));
+        menu.Items.Add(isIT ? "Configurazione iniziale (--setup)" : "Initial setup (--setup)", null, (s, e) => LaunchSetup());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Esci (disattiva popup rapido)", null, (s, e) => Application.ExitThread());
+        menu.Items.Add(isIT ? "Esci (disattiva popup rapido)" : "Quit (disable quick popup)", null, (s, e) => Application.ExitThread());
 
         _tray = new NotifyIcon {
             Icon = appIcon ?? SystemIcons.Application,
-            Text = "Soulseek Batch Download (evidenzia o copia un link Spotify/YouTube)",
+            Text = isIT
+                ? "Soulseek Batch Download (evidenzia o copia un link Spotify/YouTube)"
+                : "Soulseek Batch Download (highlight or copy a Spotify/YouTube link)",
             ContextMenuStrip = menu,
             Visible = true
         };

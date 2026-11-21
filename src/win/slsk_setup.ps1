@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$DefaultDir = "",
     [string]$DefaultUser = "",
     [string]$DefaultFormat = "flac"
@@ -20,6 +20,12 @@ function Normalize-Format([string]$raw) {
     return "flac"
 }
 
+$isIT = if (-not [string]::IsNullOrWhiteSpace($env:SLSK_LANG)) {
+    $env:SLSK_LANG.Trim().ToLowerInvariant().StartsWith("it")
+} else {
+    [System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq "it"
+}
+
 $fmtNorm = Normalize-Format $DefaultFormat
 $formatKeys = @("flac", "aiff", "mp3")
 $formatLabels = @(
@@ -29,7 +35,7 @@ $formatLabels = @(
 )
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Soulseek Batch Download — Configurazione iniziale"
+$form.Text = if ($isIT) { "Soulseek Batch Download — Configurazione iniziale" } else { "Soulseek Batch Download — Initial Setup" }
 $form.Size = New-Object System.Drawing.Size(520, 390)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
@@ -44,21 +50,21 @@ if (Test-Path $iconPath) {
 }
 
 $lblTitle = New-Object System.Windows.Forms.Label
-$lblTitle.Text = "Benvenuto! Configura il tuo account Soulseek"
+$lblTitle.Text = if ($isIT) { "Benvenuto! Configura il tuo account Soulseek" } else { "Welcome! Set up your Soulseek account" }
 $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11.5, [System.Drawing.FontStyle]::Bold)
 $lblTitle.Location = New-Object System.Drawing.Point(20, 16)
 $lblTitle.Size = New-Object System.Drawing.Size(465, 24)
 $form.Controls.Add($lblTitle)
 
 $lblSub = New-Object System.Windows.Forms.Label
-$lblSub.Text = "Credenziali e cartella vengono chieste solo al primo avvio. Nelle sessioni successive non dovrai reinserirle."
+$lblSub.Text = if ($isIT) { "Credenziali e cartella vengono chieste solo al primo avvio. Nelle sessioni successive non dovrai reinserirle." } else { "Credentials and download folder are only asked on first launch. You won't be asked again." }
 $lblSub.ForeColor = [System.Drawing.Color]::DimGray
 $lblSub.Location = New-Object System.Drawing.Point(20, 44)
 $lblSub.Size = New-Object System.Drawing.Size(465, 34)
 $form.Controls.Add($lblSub)
 
 $lblUser = New-Object System.Windows.Forms.Label
-$lblUser.Text = "Username Soulseek:"
+$lblUser.Text = if ($isIT) { "Username Soulseek:" } else { "Soulseek Username:" }
 $lblUser.Location = New-Object System.Drawing.Point(20, 86)
 $lblUser.Size = New-Object System.Drawing.Size(465, 18)
 $form.Controls.Add($lblUser)
@@ -70,7 +76,7 @@ $txtUser.Size = New-Object System.Drawing.Size(465, 25)
 $form.Controls.Add($txtUser)
 
 $lblPass = New-Object System.Windows.Forms.Label
-$lblPass.Text = "Password Soulseek:"
+$lblPass.Text = if ($isIT) { "Password Soulseek:" } else { "Soulseek Password:" }
 $lblPass.Location = New-Object System.Drawing.Point(20, 142)
 $lblPass.Size = New-Object System.Drawing.Size(465, 18)
 $form.Controls.Add($lblPass)
@@ -82,7 +88,7 @@ $txtPass.Size = New-Object System.Drawing.Size(465, 25)
 $form.Controls.Add($txtPass)
 
 $lblDir = New-Object System.Windows.Forms.Label
-$lblDir.Text = "Cartella di download:"
+$lblDir.Text = if ($isIT) { "Cartella di download:" } else { "Download folder:" }
 $lblDir.Location = New-Object System.Drawing.Point(20, 198)
 $lblDir.Size = New-Object System.Drawing.Size(465, 18)
 $form.Controls.Add($lblDir)
@@ -94,12 +100,12 @@ $txtDir.Size = New-Object System.Drawing.Size(370, 25)
 $form.Controls.Add($txtDir)
 
 $btnBrowse = New-Object System.Windows.Forms.Button
-$btnBrowse.Text = "Sfoglia..."
+$btnBrowse.Text = if ($isIT) { "Sfoglia..." } else { "Browse..." }
 $btnBrowse.Location = New-Object System.Drawing.Point(398, 219)
 $btnBrowse.Size = New-Object System.Drawing.Size(87, 27)
 $btnBrowse.Add_Click({
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = "Seleziona la cartella in cui salvare i download di Soulseek"
+    $dlg.Description = if ($isIT) { "Seleziona la cartella in cui salvare i download di Soulseek" } else { "Select the folder where Soulseek downloads will be saved" }
     $dlg.ShowNewFolderButton = $true
     if (Test-Path $txtDir.Text) { $dlg.SelectedPath = $txtDir.Text }
     if ($dlg.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
@@ -109,7 +115,7 @@ $btnBrowse.Add_Click({
 $form.Controls.Add($btnBrowse)
 
 $lblFmt = New-Object System.Windows.Forms.Label
-$lblFmt.Text = "formato"
+$lblFmt.Text = if ($isIT) { "formato" } else { "format" }
 $lblFmt.Location = New-Object System.Drawing.Point(20, 254)
 $lblFmt.Size = New-Object System.Drawing.Size(465, 18)
 $form.Controls.Add($lblFmt)
@@ -131,7 +137,7 @@ $lblErr.Size = New-Object System.Drawing.Size(260, 22)
 $form.Controls.Add($lblErr)
 
 $btnCancel = New-Object System.Windows.Forms.Button
-$btnCancel.Text = "Annulla"
+$btnCancel.Text = if ($isIT) { "Annulla" } else { "Cancel" }
 $btnCancel.Location = New-Object System.Drawing.Point(290, 310)
 $btnCancel.Size = New-Object System.Drawing.Size(88, 30)
 $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -140,22 +146,22 @@ $form.Controls.Add($btnCancel)
 
 $script:Confirmed = $false
 $btnSave = New-Object System.Windows.Forms.Button
-$btnSave.Text = "Salva e avvia"
+$btnSave.Text = if ($isIT) { "Salva e avvia" } else { "Save & start" }
 $btnSave.Location = New-Object System.Drawing.Point(385, 310)
 $btnSave.Size = New-Object System.Drawing.Size(100, 30)
 $btnSave.Add_Click({
     if ([string]::IsNullOrWhiteSpace($txtUser.Text)) {
-        $lblErr.Text = "Inserisci il tuo username Soulseek."
+        $lblErr.Text = if ($isIT) { "Inserisci il tuo username Soulseek." } else { "Please enter your Soulseek username." }
         $txtUser.Focus()
         return
     }
     if ([string]::IsNullOrEmpty($txtPass.Text)) {
-        $lblErr.Text = "Inserisci la tua password Soulseek."
+        $lblErr.Text = if ($isIT) { "Inserisci la tua password Soulseek." } else { "Please enter your Soulseek password." }
         $txtPass.Focus()
         return
     }
     if ([string]::IsNullOrWhiteSpace($txtDir.Text)) {
-        $lblErr.Text = "Scegli una cartella di download."
+        $lblErr.Text = if ($isIT) { "Scegli una cartella di download." } else { "Please choose a download folder." }
         $txtDir.Focus()
         return
     }

@@ -55,6 +55,18 @@ func clipboardMusicURL() -> String? {
     return nil
 }
 
+func isItalianLocale() -> Bool {
+    if let env = ProcessInfo.processInfo.environment["SLSK_LANG"]?.trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty {
+        return env.lowercased().hasPrefix("it")
+    }
+    if let preferred = Locale.preferredLanguages.first?.lowercased() {
+        return preferred.hasPrefix("it")
+    }
+    return false
+}
+
+let isIT = isItalianLocale()
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
@@ -64,19 +76,21 @@ alert.messageText = "Soulseek Batch Download"
 
 let needsInput = (prefilledURL == nil || prefilledURL?.isEmpty == true)
 if let url = prefilledURL, !url.isEmpty {
-    let heading = (urlLabel?.isEmpty == false) ? urlLabel! : "Link rilevato"
+    let heading = (urlLabel?.isEmpty == false) ? urlLabel! : (isIT ? "Link rilevato" : "Link detected")
     alert.informativeText = "\(heading):\n\(url)"
 } else {
-    alert.informativeText = "Incolla un URL Spotify o YouTube (playlist, album o video full album):"
+    alert.informativeText = isIT
+        ? "Incolla un URL Spotify o YouTube (playlist, album o video full album):"
+        : "Paste a Spotify or YouTube URL (playlist, album, or full album video):"
 }
 
-alert.addButton(withTitle: "Scarica")
-alert.addButton(withTitle: "Annulla")
+alert.addButton(withTitle: isIT ? "Scarica" : "Download")
+alert.addButton(withTitle: isIT ? "Annulla" : "Cancel")
 
 let formatKeys = ["flac", "aiff", "mp3"]
 let fieldWidth: CGFloat = 440
 
-let formatLabel = NSTextField(labelWithString: "formato")
+let formatLabel = NSTextField(labelWithString: isIT ? "formato" : "format")
 formatLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
 
 let formatPopup = NSPopUpButton(frame: NSRect(x: 0, y: 2, width: fieldWidth, height: 26), pullsDown: false)
@@ -94,7 +108,9 @@ var urlField: NSTextField?
 if needsInput {
     let accessory = NSView(frame: NSRect(x: 0, y: 0, width: fieldWidth, height: 86))
     let field = NSTextField(frame: NSRect(x: 0, y: 58, width: fieldWidth, height: 24))
-    field.placeholderString = "https://open.spotify.com/... oppure https://www.youtube.com/..."
+    field.placeholderString = isIT
+        ? "https://open.spotify.com/... oppure https://www.youtube.com/..."
+        : "https://open.spotify.com/... or https://www.youtube.com/..."
     if let clip = clipboardMusicURL() {
         field.stringValue = clip
     }

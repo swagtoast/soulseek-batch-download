@@ -45,6 +45,18 @@ while idx < args.count {
     }
 }
 
+func isItalianLocale() -> Bool {
+    if let env = ProcessInfo.processInfo.environment["SLSK_LANG"]?.trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty {
+        return env.lowercased().hasPrefix("it")
+    }
+    if let preferred = Locale.preferredLanguages.first?.lowercased() {
+        return preferred.hasPrefix("it")
+    }
+    return false
+}
+
+let isIT = isItalianLocale()
+
 final class SetupController: NSObject, NSWindowDelegate {
     let window: NSWindow
     let userField: NSTextField
@@ -65,7 +77,9 @@ final class SetupController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Soulseek Batch Download — Configurazione iniziale"
+        window.title = isIT
+            ? "Soulseek Batch Download — Configurazione iniziale"
+            : "Soulseek Batch Download — Initial Setup"
         window.isReleasedWhenClosed = false
         window.center()
 
@@ -80,13 +94,19 @@ final class SetupController: NSObject, NSWindowDelegate {
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
-        let title = NSTextField(labelWithString: "Benvenuto! Configura il tuo account Soulseek")
+        let title = NSTextField(
+            labelWithString: isIT
+                ? "Benvenuto! Configura il tuo account Soulseek"
+                : "Welcome! Set up your Soulseek account"
+        )
         title.font = NSFont.boldSystemFont(ofSize: 15)
         title.frame = NSRect(x: 24, y: 330, width: width - 48, height: 22)
         content.addSubview(title)
 
         let subtitle = NSTextField(
-            labelWithString: "Credenziali e cartella vengono chieste solo al primo avvio. Nelle sessioni successive non dovrai reinserirle."
+            labelWithString: isIT
+                ? "Credenziali e cartella vengono chieste solo al primo avvio. Nelle sessioni successive non dovrai reinserirle."
+                : "Credentials and download folder are only asked on first launch. You won't be asked again."
         )
         subtitle.font = NSFont.systemFont(ofSize: 11.5)
         subtitle.textColor = .secondaryLabelColor
@@ -95,22 +115,22 @@ final class SetupController: NSObject, NSWindowDelegate {
         subtitle.frame = NSRect(x: 24, y: 292, width: width - 48, height: 34)
         content.addSubview(subtitle)
 
-        let userLabel = NSTextField(labelWithString: "Username Soulseek:")
+        let userLabel = NSTextField(labelWithString: isIT ? "Username Soulseek:" : "Soulseek Username:")
         userLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         userLabel.frame = NSRect(x: 24, y: 266, width: width - 48, height: 16)
         content.addSubview(userLabel)
         userField.stringValue = defaultUser
-        userField.placeholderString = "Il tuo username Soulseek"
+        userField.placeholderString = isIT ? "Il tuo username Soulseek" : "Your Soulseek username"
         content.addSubview(userField)
 
-        let passLabel = NSTextField(labelWithString: "Password Soulseek:")
+        let passLabel = NSTextField(labelWithString: isIT ? "Password Soulseek:" : "Soulseek Password:")
         passLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         passLabel.frame = NSRect(x: 24, y: 208, width: width - 48, height: 16)
         content.addSubview(passLabel)
-        passField.placeholderString = "La tua password Soulseek"
+        passField.placeholderString = isIT ? "La tua password Soulseek" : "Your Soulseek password"
         content.addSubview(passField)
 
-        let dirLabel = NSTextField(labelWithString: "Cartella di download:")
+        let dirLabel = NSTextField(labelWithString: isIT ? "Cartella di download:" : "Download folder:")
         dirLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         dirLabel.frame = NSRect(x: 24, y: 150, width: width - 48, height: 16)
         content.addSubview(dirLabel)
@@ -118,12 +138,12 @@ final class SetupController: NSObject, NSWindowDelegate {
         dirField.placeholderString = defaultDir
         content.addSubview(dirField)
 
-        let browseBtn = NSButton(title: "Sfoglia…", target: self, action: #selector(didTapBrowse))
+        let browseBtn = NSButton(title: isIT ? "Sfoglia…" : "Browse…", target: self, action: #selector(didTapBrowse))
         browseBtn.bezelStyle = .rounded
         browseBtn.frame = NSRect(x: width - 112, y: 119, width: 88, height: 28)
         content.addSubview(browseBtn)
 
-        let formatLabel = NSTextField(labelWithString: "formato")
+        let formatLabel = NSTextField(labelWithString: isIT ? "formato" : "format")
         formatLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         formatLabel.frame = NSRect(x: 24, y: 90, width: width - 48, height: 16)
         content.addSubview(formatLabel)
@@ -143,13 +163,13 @@ final class SetupController: NSObject, NSWindowDelegate {
         errorLabel.frame = NSRect(x: 24, y: 20, width: width - 260, height: 18)
         content.addSubview(errorLabel)
 
-        let cancelBtn = NSButton(title: "Annulla", target: self, action: #selector(didTapCancel))
+        let cancelBtn = NSButton(title: isIT ? "Annulla" : "Cancel", target: self, action: #selector(didTapCancel))
         cancelBtn.bezelStyle = .rounded
         cancelBtn.keyEquivalent = "\u{1b}"
         cancelBtn.frame = NSRect(x: width - 232, y: 14, width: 88, height: 30)
         content.addSubview(cancelBtn)
 
-        let saveBtn = NSButton(title: "Salva e avvia", target: self, action: #selector(didTapSave))
+        let saveBtn = NSButton(title: isIT ? "Salva e avvia" : "Save & start", target: self, action: #selector(didTapSave))
         saveBtn.bezelStyle = .rounded
         saveBtn.keyEquivalent = "\r"
         saveBtn.frame = NSRect(x: width - 136, y: 14, width: 112, height: 30)
@@ -161,9 +181,11 @@ final class SetupController: NSObject, NSWindowDelegate {
 
     @objc func didTapBrowse() {
         let panel = NSOpenPanel()
-        panel.title = "Scegli cartella download"
-        panel.message = "Seleziona la cartella in cui salvare i brani e gli album scaricati da Soulseek"
-        panel.prompt = "Scegli"
+        panel.title = isIT ? "Scegli cartella download" : "Choose download folder"
+        panel.message = isIT
+            ? "Seleziona la cartella in cui salvare i brani e gli album scaricati da Soulseek"
+            : "Select the folder where downloaded tracks and albums will be saved"
+        panel.prompt = isIT ? "Scegli" : "Choose"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -187,17 +209,17 @@ final class SetupController: NSObject, NSWindowDelegate {
         let p = passField.stringValue
         let d = dirField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if u.isEmpty {
-            errorLabel.stringValue = "Inserisci il tuo username Soulseek."
+            errorLabel.stringValue = isIT ? "Inserisci il tuo username Soulseek." : "Please enter your Soulseek username."
             window.makeFirstResponder(userField)
             return
         }
         if p.isEmpty {
-            errorLabel.stringValue = "Inserisci la tua password Soulseek."
+            errorLabel.stringValue = isIT ? "Inserisci la tua password Soulseek." : "Please enter your Soulseek password."
             window.makeFirstResponder(passField)
             return
         }
         if d.isEmpty {
-            errorLabel.stringValue = "Scegli una cartella di download."
+            errorLabel.stringValue = isIT ? "Scegli una cartella di download." : "Please choose a download folder."
             window.makeFirstResponder(dirField)
             return
         }

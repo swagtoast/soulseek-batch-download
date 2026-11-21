@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 
 from config import PipelineConfig
+from i18n import t
 
 
 REPO_SLUG = os.environ.get("SLSK_REPO_SLUG", "swagtoast/soulseek-batch-download")
@@ -288,24 +289,24 @@ def check_and_apply_update(cfg: PipelineConfig, force: bool = False) -> bool:
     if status == "not_modified":
         _save_state(state_path, state)
         if force:
-            print(f"[Update] Già aggiornato all'ultima versione ({local_sha[:7]}).")
+            print(t("upd_up_to_date", sha=local_sha[:7]))
         return False
 
     if status != "ok" or not remote_sha:
         _save_state(state_path, state)
         if force:
-            print("[Update] Impossibile contattare GitHub (offline o limite API).")
+            print(t("upd_offline"))
         return False
 
     if local_sha == remote_sha:
         _save_state(state_path, state)
         if force:
-            print(f"[Update] Già aggiornato all'ultima versione ({remote_sha[:7]}).")
+            print(t("upd_up_to_date", sha=remote_sha[:7]))
         return False
 
     # If this is a git checkout and user forced --update, use git pull cleanly if possible, else warn.
     if (cfg.project_root / ".git").exists():
-        print("[Update] Cartella git locale rilevata: aggiorno tramite git pull --ff-only...")
+        print(t("upd_git_pull"))
         proc = subprocess.run(
             ["git", "-C", str(cfg.project_root), "pull", "--ff-only"],
             check=False,
@@ -316,7 +317,7 @@ def check_and_apply_update(cfg: PipelineConfig, force: bool = False) -> bool:
             return True
         return False
 
-    print(f"[Update] Nuova versione disponibile ({remote_sha[:7]}), aggiorno automaticamente...", flush=True)
+    print(t("upd_downloading", sha=remote_sha[:7]), flush=True)
     tar_url = f"https://github.com/{REPO_SLUG}/archive/refs/heads/{REPO_BRANCH}.tar.gz"
     try:
         req = urllib.request.Request(tar_url, headers={"User-Agent": "soulseek-batch-download-updater/1.0"})
@@ -326,9 +327,9 @@ def check_and_apply_update(cfg: PipelineConfig, force: bool = False) -> bool:
         state["commit"] = remote_sha
         state["updated_at"] = now
         _save_state(state_path, state)
-        print(f"[Update] Aggiornamento completato ({remote_sha[:7]})! Riavvio con la nuova versione...\n", flush=True)
+        print(t("upd_done", sha=remote_sha[:7]), flush=True)
         return True
     except Exception as exc:
         _save_state(state_path, state)
-        print(f"[Update] Aggiornamento saltato ({exc}); continuo con la versione attuale.")
+        print(t("upd_skipped", exc=exc))
         return False

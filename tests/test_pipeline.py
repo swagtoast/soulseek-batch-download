@@ -642,9 +642,10 @@ class DownloaderAndConverterTests(unittest.TestCase):
                     (pl_dir / "info.nfo").write_text("junk", encoding="utf-8")
                 return 0  # Rescue pass also finds nothing
 
-            with patch("downloader._run_sockseek", side_effect=fake_run):
-                with patch("downloader._open_in_finder"):
-                    rc = download_collection(pl, cfg, convert_format="mp3", open_finder=False, auto_tag=False)
+            with patch.dict("os.environ", {"SLSK_LANG": "it"}, clear=False):
+                with patch("downloader._run_sockseek", side_effect=fake_run):
+                    with patch("downloader._open_in_finder"):
+                        rc = download_collection(pl, cfg, convert_format="mp3", open_finder=False, auto_tag=False)
 
             self.assertEqual(rc, 0)
             self.assertEqual(calls, 2)
@@ -1391,6 +1392,38 @@ class LinuxSupportTests(unittest.TestCase):
             sh_path = root / "Soulseek Batch Pipeline.sh"
             self.assertTrue(sh_path.is_file())
             self.assertTrue(sh_path.stat().st_mode & 0o111)
+
+
+class I18nTests(unittest.TestCase):
+    def test_all_it_and_en_keys_match_and_language_detection_defaults_to_en_for_non_italian(self) -> None:
+        import i18n
+
+        self.assertEqual(set(i18n.STRINGS["it"].keys()), set(i18n.STRINGS["en"].keys()))
+
+        # Italian locales -> 'it'
+        for val in ("it", "it_IT.UTF-8", "it-CH", "it_IT:en_US"):
+            with patch.dict("os.environ", {"SLSK_LANG": "", "LC_ALL": val, "LANG": ""}, clear=False):
+                i18n.reset_lang_cache()
+                self.assertEqual(i18n.detect_language(), "it", f"Expected 'it' for {val}")
+
+        # Any non-Italian locale -> 'en'
+        for val in ("en_US.UTF-8", "fr_FR.UTF-8", "de_DE.UTF-8", "es_ES.UTF-8", "ja_JP.UTF-8"):
+            with patch.dict("os.environ", {"SLSK_LANG": "", "LC_ALL": val, "LANG": ""}, clear=False):
+                i18n.reset_lang_cache()
+                self.assertEqual(i18n.detect_language(), "en", f"Expected 'en' for {val}")
+
+        # Explicit SLSK_LANG override switches UI strings and missing-tracks filename
+        with patch.dict("os.environ", {"SLSK_LANG": "en"}, clear=False):
+            self.assertEqual(i18n.get_lang(), "en")
+            self.assertEqual(i18n.t("dl_report_filename"), "MISSING_TRACKS.txt")
+            self.assertEqual(cli._describe_source_url("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy"), "Spotify Full Album detected")
+
+        with patch.dict("os.environ", {"SLSK_LANG": "it"}, clear=False):
+            self.assertEqual(i18n.get_lang(), "it")
+            self.assertEqual(i18n.t("dl_report_filename"), "BRANI_MANCANTI.txt")
+            self.assertEqual(cli._describe_source_url("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy"), "Full Album Spotify rilevato")
+
+        i18n.reset_lang_cache()
 
 
 if __name__ == "__main__":

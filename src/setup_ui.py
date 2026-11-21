@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 from config import PipelineConfig, load_config, normalize_convert_format
+from i18n import is_italian, t
 
 
 _PLACEHOLDER_VALUES = {
@@ -145,10 +146,14 @@ def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | No
         return None
 
     esc_user = _applescript_escape(existing_user)
+    esc_title = _applescript_escape(t("setup_title"))
+    esc_cancel = _applescript_escape(t("ui_btn_cancel"))
+    esc_next = _applescript_escape(t("ui_btn_next"))
+    esc_save = _applescript_escape(t("ui_btn_save"))
     rc, username = _run_osascript(
-        f'set r to display dialog "Benvenuto! Inserisci il tuo Username Soulseek (chiesto solo al primo avvio):" '
-        f'with title "Soulseek Batch Download — Configurazione iniziale" '
-        f'default answer "{esc_user}" buttons {{"Annulla", "Avanti"}} default button "Avanti"\n'
+        f'set r to display dialog "{_applescript_escape(t("setup_user_dialog"))}" '
+        f'with title "{esc_title}" '
+        f'default answer "{esc_user}" buttons {{"{esc_cancel}", "{esc_next}"}} default button "{esc_next}"\n'
         f'return text returned of r'
     )
     if rc != 0:
@@ -158,10 +163,10 @@ def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | No
         return {"confirmed": False}
 
     rc, password = _run_osascript(
-        'set r to display dialog "Inserisci la tua Password Soulseek:" '
-        'with title "Soulseek Batch Download — Configurazione iniziale" '
-        'default answer "" with hidden answer buttons {"Annulla", "Avanti"} default button "Avanti"\n'
-        'return text returned of r'
+        f'set r to display dialog "{_applescript_escape(t("setup_pass_dialog"))}" '
+        f'with title "{esc_title}" '
+        f'default answer "" with hidden answer buttons {{"{esc_cancel}", "{esc_next}"}} default button "{esc_next}"\n'
+        f'return text returned of r'
     )
     if rc != 0 or not password:
         return {"confirmed": False}
@@ -171,7 +176,7 @@ def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | No
         default_parent = Path.home()
     esc_dir = _applescript_escape(str(default_parent))
     rc, chosen_dir = _run_osascript(
-        f'set f to choose folder with prompt "Scegli la cartella di download per Soulseek:" '
+        f'set f to choose folder with prompt "{_applescript_escape(t("setup_dir_dialog"))}" '
         f'default location (POSIX file "{esc_dir}")\n'
         f'return POSIX path of f'
     )
@@ -193,8 +198,8 @@ def _run_applescript_setup(cfg: PipelineConfig, existing_user: str) -> dict | No
     rc, chosen_fmt_label = _run_osascript(
         'set opts to {".flac (lossless)", ".aiff (PCM 24-bit lossless)", ".mp3 (320 kbps)"}\n'
         f'set c to choose from list opts with title "Soulseek Batch Download" '
-        f'with prompt "formato" default items {{"{default_item}"}} '
-        f'OK button name "Salva e avvia" cancel button name "Annulla"\n'
+        f'with prompt "{_applescript_escape(t("ui_format_label"))}" default items {{"{default_item}"}} '
+        f'OK button name "{esc_save}" cancel button name "{esc_cancel}"\n'
         'if c is false then error number -128\n'
         'return item 1 of c'
     )
@@ -277,32 +282,34 @@ def _run_gui_setup(cfg: PipelineConfig) -> dict | None:
 
 
 def _run_terminal_setup(cfg: PipelineConfig) -> dict:
-    print("\n=== Configurazione iniziale — Soulseek Batch Download ===")
-    print("Queste impostazioni vengono chieste solo al primo avvio.\n")
+    print(t("setup_term_header"))
+    print(t("setup_term_sub"))
     existing_user, _ = _read_sockseek_creds(cfg.sockseek_conf)
     if existing_user in _PLACEHOLDER_VALUES:
         existing_user = ""
 
+    user_lbl = t("setup_user_label").rstrip(":")
     while True:
-        prompt_u = f"Username Soulseek [{existing_user}]: " if existing_user else "Username Soulseek: "
+        prompt_u = f"{user_lbl} [{existing_user}]: " if existing_user else f"{user_lbl}: "
         u = input(prompt_u).strip() or existing_user
         if u:
             break
     while True:
-        p = getpass.getpass("Password Soulseek (nascosta): ")
+        p = getpass.getpass(t("setup_pass_term"))
         if p:
             break
 
     default_dir = str(cfg.output_dir)
-    d = input(f"Cartella download [{default_dir}]: ").strip() or default_dir
+    dir_lbl = t("setup_dir_label").rstrip(":")
+    d = input(f"{dir_lbl} [{default_dir}]: ").strip() or default_dir
     d = str(Path(d).expanduser())
 
-    print("Formato:")
+    print(t("setup_format_heading"))
     print("  1) .flac (lossless)")
     print("  2) .aiff (PCM 24-bit lossless)")
     print("  3) .mp3 (320 kbps)")
     default_idx = {"flac": "1", "aiff": "2", "mp3": "3"}.get(cfg.convert_format, "1")
-    ans = input(f"Scegli [1/2/3, default {default_idx}]: ").strip().lower().lstrip(".")
+    ans = input(t("setup_choose_123", default=default_idx)).strip().lower().lstrip(".")
     if ans in {"2", "aiff", "aif"}:
         conv_fmt = "aiff"
     elif ans in {"3", "mp3", "320"}:
@@ -314,8 +321,8 @@ def _run_terminal_setup(cfg: PipelineConfig) -> dict:
 
     del_orig = cfg.delete_original
     if conv_fmt in {"aiff", "mp3"}:
-        dhint = "S/n" if del_orig else "s/N"
-        dans = input(f"Elimina file originale dopo la conversione? [{dhint}]: ").strip().lower()
+        dhint = ("S/n" if del_orig else "s/N") if is_italian() else ("Y/n" if del_orig else "y/N")
+        dans = input(t("setup_delete_orig_q", hint=dhint)).strip().lower()
         if dans in {"s", "si", "sì", "y", "yes"}:
             del_orig = True
         elif dans in {"n", "no"}:
@@ -358,5 +365,5 @@ def ensure_configured(cfg: PipelineConfig, force_setup: bool = False, no_gui: bo
 
     write_setup_configs(cfg, username, password, output_dir, convert_fmt, delete_original)
     fmt_label = {"flac": ".flac", "aiff": ".aiff (24-bit)", "mp3": ".mp3 (320 kbps)"}[convert_fmt]
-    print(f"[Setup] Configurazione salvata! Cartella download: {output_dir} | Formato: {fmt_label}")
+    print(t("setup_saved", dir=output_dir, fmt=fmt_label))
     return load_config(cfg.config_file)

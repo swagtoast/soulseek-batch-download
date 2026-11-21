@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
 
 from config import PipelineConfig, load_config, normalize_convert_format, save_convert_preference
 from downloader import download_collection
+from i18n import t
 from models import CollectionExport
 from setup_ui import ensure_configured, is_first_run_needed
 from spotify_extractor import extract_spotify
@@ -25,52 +26,53 @@ from url_utils import classify_url
 from youtube_extractor import extract_youtube
 
 
-_KIND_LABELS = {
-    "spotify_playlist": "Playlist Spotify rilevata",
-    "spotify_album": "Full Album Spotify rilevato",
-    "spotify_track": "Brano Spotify rilevato",
-    "youtube_playlist": "Playlist / Album YouTube rilevato",
-    "youtube_video": "Video / Full Album YouTube rilevato",
+_KIND_LABEL_KEYS = {
+    "spotify_playlist": "kind_spotify_playlist",
+    "spotify_album": "kind_spotify_album",
+    "spotify_track": "kind_spotify_track",
+    "youtube_playlist": "kind_youtube_playlist",
+    "youtube_video": "kind_youtube_video",
 }
 
 
 def _describe_source_url(raw_input: str) -> str:
     try:
         parsed = classify_url(raw_input)
-        return _KIND_LABELS.get(parsed.kind, "Link rilevato")
+        return t(_KIND_LABEL_KEYS.get(parsed.kind, "kind_generic"))
     except Exception:
-        return "Link rilevato"
+        return t("kind_generic")
 
 
 def extract_collection(raw_input: str, cfg: PipelineConfig) -> CollectionExport:
     """Classify URL and dispatch to Spotify or YouTube extractor."""
     parsed = classify_url(raw_input)
-    print(f"[Input] Rilevato: {parsed.kind} -> {parsed.url}")
+    print(t("cli_detected", kind=parsed.kind, url=parsed.url))
 
     if parsed.kind.startswith("spotify_"):
         return extract_spotify(parsed, cfg.spotify_client_id, cfg.spotify_client_secret)
     if parsed.kind.startswith("youtube_"):
         return extract_youtube(parsed, cfg)
-    raise ValueError(f"Tipo sorgente non gestito: {parsed.kind}")
+    raise ValueError(t("cli_unsupported", kind=parsed.kind))
 
 
 def print_summary(export: CollectionExport) -> None:
     """Display extracted metadata and track preview."""
     kind_label = {
-        "playlist": "Playlist",
-        "album": "Full Album",
-        "single_track": "Brano singolo",
+        "playlist": t("summary_playlist"),
+        "album": t("summary_album"),
+        "single_track": t("summary_single_track"),
     }[export.kind]
     print(f"\n=== {kind_label}: {export.name} ===")
     if export.kind == "album" and export.artist:
-        print(f"Artista: {export.artist} | Album: {export.album}")
-    print(f"Tracce estratte: {len(export.tracks)}" + (" (formattate con LLM)" if export.used_llm else ""))
+        print(t("summary_artist_album", artist=export.artist, album=export.album))
+    llm_note = t("summary_formatted_llm") if export.used_llm else ""
+    print(t("summary_tracks_extracted", count=len(export.tracks)) + llm_note)
     for idx, tr in enumerate(export.tracks[:15], start=1):
         dur = f" [{tr.duration_sec}s]" if tr.duration_sec else ""
         prefix = f"{tr.artist} - " if tr.artist else ""
         print(f"  {idx:02d}. {prefix}{tr.title}{dur}")
     if len(export.tracks) > 15:
-        print(f"  ... e altre {len(export.tracks) - 15} tracce")
+        print(t("summary_more_tracks", count=len(export.tracks) - 15))
     print("")
 
 
@@ -172,12 +174,16 @@ def _prompt_with_applescript(
 ) -> tuple[bool, str, str]:
     """Universal zero-CPU StandardAdditions macOS single-window format picker (all Intel & Apple Silicon Macs)."""
     final_url = (url or "").strip()
+    btn_cancel = _as_escape(t("ui_btn_cancel"))
+    btn_next = _as_escape(t("ui_btn_next"))
+    btn_dl = _as_escape(t("ui_btn_download"))
     if not final_url:
         clip = _as_escape(_clipboard_music_url())
+        paste_msg = _as_escape(t("cli_paste_dialog"))
         rc, entered = _run_osascript(
-            f'set r to display dialog "Incolla un URL Spotify o YouTube (playlist, album o video full album):" '
+            f'set r to display dialog "{paste_msg}" '
             f'with title "Soulseek Batch Download" default answer "{clip}" '
-            f'buttons {{"Annulla", "Avanti"}} default button "Avanti"\n'
+            f'buttons {{"{btn_cancel}", "{btn_next}"}} default button "{btn_next}"\n'
             f'return text returned of r'
         )
         if rc != 0 or not entered.strip():
@@ -193,13 +199,14 @@ def _prompt_with_applescript(
     default_item = {"flac": items[0], "aiff": items[1], "mp3": items[2]}.get(
         normalize_convert_format(default_format), items[0]
     )
-    heading = _as_escape(label or "formato")
-    prompt_text = f"{heading} — formato" if label else "formato"
+    fmt_lbl = _as_escape(t("ui_format_label"))
+    heading = _as_escape(label or fmt_lbl)
+    prompt_text = f"{heading} — {fmt_lbl}" if label else fmt_lbl
     rc, chosen_label = _run_osascript(
         'set opts to {".flac (lossless)", ".aiff (PCM 24-bit lossless)", ".mp3 (320 kbps)"}\n'
         f'set c to choose from list opts with title "Soulseek Batch Download" '
         f'with prompt "{prompt_text}" default items {{"{default_item}"}} '
-        f'OK button name "Scarica" cancel button name "Annulla"\n'
+        f'OK button name "{btn_dl}" cancel button name "{btn_cancel}"\n'
         'if c is false then error number -128\n'
         'return item 1 of c'
     )
@@ -341,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         was_unconfigured = is_first_run_needed(cfg)
         updated_cfg = ensure_configured(cfg, force_setup=args.setup, no_gui=args.no_gui)
         if updated_cfg is None:
-            print("Configurazione iniziale annullata.")
+            print(t("cli_setup_cancelled"))
             return 0
         cfg = updated_cfg
         did_first_run_setup = was_unconfigured or args.setup
@@ -360,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         if gui_res is not None:
             confirmed, chosen_url, chosen_convert = gui_res
             if not confirmed:
-                print("Operazione annullata.")
+                print(t("cli_cancelled"))
                 return 0
             raw_input = chosen_url
             if args.convert_format is None:
@@ -368,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
             save_convert_preference(cfg, convert_format, True)
         else:
             try:
-                raw_input = input("Incolla URL Spotify o YouTube (playlist / album / video full album): ").strip()
+                raw_input = input(t("cli_paste_prompt")).strip()
             except EOFError:
                 return 1
     elif args.convert_format is not None:
@@ -385,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         if gui_res is not None:
             confirmed, chosen_url, chosen_convert = gui_res
             if not confirmed:
-                print("Operazione annullata.")
+                print(t("cli_cancelled"))
                 return 0
             raw_input = chosen_url or raw_input
             convert_format = chosen_convert
@@ -405,15 +412,15 @@ def main(argv: list[str] | None = None) -> int:
             auto_tag=not args.no_tag,
         )
     except KeyboardInterrupt:
-        print("\nInterrotto dall'utente.")
+        print(t("cli_interrupted"))
         rc = 130
     except Exception as exc:
-        print(f"\n[Errore] {exc}")
+        print(t("cli_error", exc=exc))
         rc = 1
 
     if args.pause or interactive:
         try:
-            input("\nPremi Invio per chiudere...")
+            input(t("cli_press_enter"))
         except EOFError:
             pass
     return rc

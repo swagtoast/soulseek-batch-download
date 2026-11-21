@@ -30,6 +30,12 @@ function Get-ClipboardMusicUrl {
     return ""
 }
 
+$isIT = if (-not [string]::IsNullOrWhiteSpace($env:SLSK_LANG)) {
+    $env:SLSK_LANG.Trim().ToLowerInvariant().StartsWith("it")
+} else {
+    [System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq "it"
+}
+
 $fmtNorm = Normalize-Format $DefaultFormat
 $formatKeys = @("flac", "aiff", "mp3")
 $formatLabels = @(
@@ -61,7 +67,7 @@ $y = 16
 
 if ($needsInput) {
     $lblInfo = New-Object System.Windows.Forms.Label
-    $lblInfo.Text = "Incolla un URL Spotify o YouTube (playlist, album o video full album):"
+    $lblInfo.Text = if ($isIT) { "Incolla un URL Spotify o YouTube (playlist, album o video full album):" } else { "Paste a Spotify or YouTube URL (playlist, album, or full album video):" }
     $lblInfo.Location = New-Object System.Drawing.Point(20, $y)
     $lblInfo.Size = New-Object System.Drawing.Size(445, 22)
     $form.Controls.Add($lblInfo)
@@ -77,7 +83,7 @@ if ($needsInput) {
     $form.Controls.Add($txtUrl)
     $y += 38
 } else {
-    $heading = if (-not [string]::IsNullOrWhiteSpace($Label)) { $Label } else { "Link rilevato" }
+    $heading = if (-not [string]::IsNullOrWhiteSpace($Label)) { $Label } else { if ($isIT) { "Link rilevato" } else { "Link detected" } }
     $lblHead = New-Object System.Windows.Forms.Label
     $lblHead.Text = "${heading}:"
     $lblHead.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
@@ -97,7 +103,7 @@ if ($needsInput) {
 }
 
 $lblFmt = New-Object System.Windows.Forms.Label
-$lblFmt.Text = "formato"
+$lblFmt.Text = if ($isIT) { "formato" } else { "format" }
 $lblFmt.Location = New-Object System.Drawing.Point(20, $y)
 $lblFmt.Size = New-Object System.Drawing.Size(445, 18)
 $form.Controls.Add($lblFmt)
@@ -114,7 +120,7 @@ $form.Controls.Add($cmbFmt)
 $y += 42
 
 $btnCancel = New-Object System.Windows.Forms.Button
-$btnCancel.Text = "Annulla"
+$btnCancel.Text = if ($isIT) { "Annulla" } else { "Cancel" }
 $btnCancel.Location = New-Object System.Drawing.Point(280, $y)
 $btnCancel.Size = New-Object System.Drawing.Size(88, 30)
 $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -123,7 +129,7 @@ $form.Controls.Add($btnCancel)
 
 $script:Confirmed = $false
 $btnGo = New-Object System.Windows.Forms.Button
-$btnGo.Text = "Scarica"
+$btnGo.Text = if ($isIT) { "Scarica" } else { "Download" }
 $btnGo.Location = New-Object System.Drawing.Point(377, $y)
 $btnGo.Size = New-Object System.Drawing.Size(88, 30)
 $btnGo.Add_Click({

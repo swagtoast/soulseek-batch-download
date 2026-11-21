@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import uuid
 
+from i18n import t
+
 
 _CONVERTIBLE_SOURCES: dict[str, set[str]] = {
     "mp3": {".flac", ".wav", ".aiff", ".aif", ".m4a", ".alac", ".ogg", ".opus"},
@@ -251,9 +253,9 @@ def convert_downloaded_flacs(
     suffix_map = {"mp3": ".mp3", "aiff": ".aiff", "flac": ".flac"}
     tag_map = {"mp3": "MP3 320", "aiff": "AIFF", "flac": "FLAC"}
     desc_map = {
-        "mp3": "MP3 (320 kbps CBR)",
-        "aiff": "AIFF (PCM 24-bit, massima qualità)",
-        "flac": "FLAC (lossless)",
+        "mp3": t("conv_desc_mp3"),
+        "aiff": t("conv_desc_aiff"),
+        "flac": t("conv_desc_flac"),
     }
     suffix = suffix_map[fmt]
     tag = tag_map[fmt]
@@ -264,11 +266,11 @@ def convert_downloaded_flacs(
     if not sources:
         mp3_count = sum(1 for p in downloaded_audio if p.suffix.lower() == ".mp3")
         if mp3_count and fmt != "flac":
-            print(f"[{tag}] Nessun file da convertire ({mp3_count} file .mp3 mantenuti invariati).")
+            print(t("conv_none_mp3_kept", tag=tag, count=mp3_count))
         return (0, 0)
 
-    keep_note = " — elimino originali" if delete_original else " — mantengo originali"
-    print(f"\n[{tag}] Conversione di {len(sources)} file audio in {desc}{keep_note}...")
+    keep_note = t("conv_keep_delete") if delete_original else t("conv_keep_preserve")
+    print(t("conv_start", tag=tag, count=len(sources), desc=desc, keep_note=keep_note))
     converted = 0
     failed = 0
     replacements: dict[Path, Path] = {}
@@ -294,8 +296,8 @@ def convert_downloaded_flacs(
                 )
 
             if proc.returncode != 0 or not _verify_converted(ffprobe_bin, temp_out, fmt):
-                err = (proc.stderr or "").strip() or "verifica ffprobe fallita"
-                print(f"  [{idx}/{len(sources)}] ERRORE {src_path.name}: {err} (file originale mantenuto)")
+                err = (proc.stderr or "").strip() or "ffprobe verification failed"
+                print(t("conv_err", idx=idx, total=len(sources), name=src_path.name, err=err))
                 failed += 1
                 continue
 
@@ -307,7 +309,7 @@ def convert_downloaded_flacs(
             converted += 1
             print(f"  [{idx}/{len(sources)}] {src_path.name} -> {final_out.name}")
         except Exception as exc:
-            print(f"  [{idx}/{len(sources)}] ERRORE {src_path.name}: {exc} (file originale mantenuto)")
+            print(t("conv_err", idx=idx, total=len(sources), name=src_path.name, err=exc))
             failed += 1
         finally:
             temp_out.unlink(missing_ok=True)
@@ -316,8 +318,8 @@ def convert_downloaded_flacs(
         _update_index_csv(replacements)
     mp3_count = sum(1 for p in downloaded_audio if p.suffix.lower() == ".mp3")
     if mp3_count and fmt != "mp3":
-        print(f"[{tag}] Mantenuti invariati {mp3_count} file .mp3 originali.")
-    print(f"[{tag}] Completato: {converted} convertiti in {tag}, {failed} errori.")
+        print(t("conv_kept_mp3", tag=tag, count=mp3_count))
+    print(t("conv_done", tag=tag, converted=converted, failed=failed))
     return (converted, failed)
 
 

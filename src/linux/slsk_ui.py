@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 from config import PipelineConfig, normalize_convert_format
+from i18n import t
 
 
 _FORMAT_ITEMS = [
@@ -94,7 +95,7 @@ def _run_tk_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
     except Exception:
         return None
 
-    root.title("Soulseek Batch Download — Configurazione iniziale")
+    root.title(t("setup_title"))
     root.resizable(False, False)
 
     frm = ttk.Frame(root, padding=16)
@@ -102,34 +103,34 @@ def _run_tk_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
 
     ttk.Label(
         frm,
-        text="Configurazione iniziale (chiesta solo al primo avvio)",
+        text=t("setup_heading"),
         font=("Sans", 11, "bold"),
     ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
-    ttk.Label(frm, text="Username Soulseek:").grid(row=1, column=0, sticky="w", pady=4)
+    ttk.Label(frm, text=t("setup_user_label")).grid(row=1, column=0, sticky="w", pady=4)
     user_var = tk.StringVar(value=existing_user)
     user_entry = ttk.Entry(frm, textvariable=user_var, width=36)
     user_entry.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
 
-    ttk.Label(frm, text="Password Soulseek:").grid(row=2, column=0, sticky="w", pady=4)
+    ttk.Label(frm, text=t("setup_pass_label")).grid(row=2, column=0, sticky="w", pady=4)
     pass_var = tk.StringVar(value="")
     pass_entry = ttk.Entry(frm, textvariable=pass_var, width=36, show="•")
     pass_entry.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
 
-    ttk.Label(frm, text="Cartella download:").grid(row=3, column=0, sticky="w", pady=4)
+    ttk.Label(frm, text=t("setup_dir_label")).grid(row=3, column=0, sticky="w", pady=4)
     dir_var = tk.StringVar(value=str(cfg.output_dir))
     dir_entry = ttk.Entry(frm, textvariable=dir_var, width=28)
     dir_entry.grid(row=3, column=1, sticky="ew", padx=(8, 4), pady=4)
 
     def browse() -> None:
         init_dir = dir_var.get() if Path(dir_var.get()).is_dir() else str(Path.home())
-        picked = filedialog.askdirectory(initialdir=init_dir, title="Scegli la cartella di download")
+        picked = filedialog.askdirectory(initialdir=init_dir, title=t("setup_dir_dialog"))
         if picked:
             dir_var.set(picked)
 
-    ttk.Button(frm, text="Sfoglia…", command=browse).grid(row=3, column=2, sticky="e", pady=4)
+    ttk.Button(frm, text=t("ui_btn_browse"), command=browse).grid(row=3, column=2, sticky="e", pady=4)
 
-    ttk.Label(frm, text="formato:").grid(row=4, column=0, sticky="w", pady=4)
+    ttk.Label(frm, text=f"{t('ui_format_label')}:").grid(row=4, column=0, sticky="w", pady=4)
     default_label = next((lbl for lbl, code in _FORMAT_ITEMS if code == cfg.convert_format), _FORMAT_ITEMS[0][0])
     fmt_var = tk.StringVar(value=default_label)
     fmt_combo = ttk.Combobox(
@@ -157,7 +158,7 @@ def _run_tk_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
         u = user_var.get().strip()
         p = pass_var.get()
         if not u or not p:
-            err_var.set("Inserisci sia Username che Password Soulseek.")
+            err_var.set(t("setup_err_creds"))
             return
         label_to_code = {lbl: code for lbl, code in _FORMAT_ITEMS}
         result.update(
@@ -172,8 +173,8 @@ def _run_tk_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
         )
         root.destroy()
 
-    ttk.Button(btn_bar, text="Annulla", command=on_cancel).pack(side="left", padx=(0, 8))
-    save_btn = ttk.Button(btn_bar, text="Salva e avvia", command=on_save)
+    ttk.Button(btn_bar, text=t("ui_btn_cancel"), command=on_cancel).pack(side="left", padx=(0, 8))
+    save_btn = ttk.Button(btn_bar, text=t("ui_btn_save"), command=on_save)
     save_btn.pack(side="left")
 
     root.bind("<Return>", lambda _e: on_save())
@@ -215,14 +216,14 @@ def _run_tk_prompt(
 
     url_var = tk.StringVar(value=state["url"] or read_linux_clipboard_music_url())
     if not state["url"]:
-        ttk.Label(frm, text="Link Spotify / YouTube:").grid(row=row, column=0, sticky="w", pady=4)
+        ttk.Label(frm, text=t("ui_url_label")).grid(row=row, column=0, sticky="w", pady=4)
         url_entry = ttk.Entry(frm, textvariable=url_var, width=44)
         url_entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=4)
         row += 1
     else:
         url_entry = None
 
-    ttk.Label(frm, text="formato:").grid(row=row, column=0, sticky="w", pady=4)
+    ttk.Label(frm, text=f"{t('ui_format_label')}:").grid(row=row, column=0, sticky="w", pady=4)
     default_label = next(
         (lbl for lbl, code in _FORMAT_ITEMS if code == state["fmt"]),
         _FORMAT_ITEMS[0][0],
@@ -255,8 +256,8 @@ def _run_tk_prompt(
         state["fmt"] = label_to_code.get(fmt_var.get(), "flac")
         root.destroy()
 
-    ttk.Button(btn_bar, text="Annulla", command=on_cancel).pack(side="left", padx=(0, 8))
-    ttk.Button(btn_bar, text="Scarica", command=on_ok).pack(side="left")
+    ttk.Button(btn_bar, text=t("ui_btn_cancel"), command=on_cancel).pack(side="left", padx=(0, 8))
+    ttk.Button(btn_bar, text=t("ui_btn_download"), command=on_ok).pack(side="left")
 
     root.bind("<Return>", lambda _e: on_ok())
     root.bind("<Escape>", lambda _e: on_cancel())
@@ -276,8 +277,8 @@ def _run_zenity_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
         [
             zenity,
             "--entry",
-            "--title=Soulseek Batch Download — Configurazione iniziale",
-            "--text=Inserisci il tuo Username Soulseek (chiesto solo al primo avvio):",
+            f"--title={t('setup_title')}",
+            f"--text={t('setup_user_dialog')}",
             f"--entry-text={existing_user}",
         ],
         capture_output=True,
@@ -292,7 +293,7 @@ def _run_zenity_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
         [
             zenity,
             "--password",
-            "--title=Soulseek Batch Download — Password Soulseek",
+            f"--title={t('setup_pass_label').rstrip(':')}",
         ],
         capture_output=True,
         text=True,
@@ -308,7 +309,7 @@ def _run_zenity_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
             zenity,
             "--file-selection",
             "--directory",
-            "--title=Scegli la cartella di download per Soulseek",
+            f"--title={t('setup_dir_dialog')}",
             f"--filename={default_dir}",
         ],
         capture_output=True,
@@ -324,9 +325,9 @@ def _run_zenity_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
         "--list",
         "--radiolist",
         "--title=Soulseek Batch Download",
-        "--text=formato",
-        "--column=Scelta",
-        "--column=Formato",
+        f"--text={t('ui_format_label')}",
+        "--column=",
+        f"--column={t('setup_format_heading').rstrip(':')}",
     ]
     for lbl, code in _FORMAT_ITEMS:
         args.extend(["TRUE" if code == cfg.convert_format else "FALSE", lbl])
@@ -360,7 +361,7 @@ def _run_zenity_prompt(
                 zenity,
                 "--entry",
                 "--title=Soulseek Batch Download",
-                "--text=Incolla un URL Spotify o YouTube (playlist, album o video full album):",
+                f"--text={t('cli_paste_dialog')}",
                 f"--entry-text={clip}",
             ],
             capture_output=True,
@@ -372,16 +373,17 @@ def _run_zenity_prompt(
         final_url = p_url.stdout.strip()
 
     fmt_norm = normalize_convert_format(default_format)
-    heading = f"{label} — formato" if label else "formato"
+    fmt_lbl = t("ui_format_label")
+    heading = f"{label} — {fmt_lbl}" if label else fmt_lbl
     args = [
         zenity,
         "--list",
         "--radiolist",
         "--title=Soulseek Batch Download",
         f"--text={heading}",
-        "--ok-label=Scarica",
-        "--column=Scelta",
-        "--column=Formato",
+        f"--ok-label={t('ui_btn_download')}",
+        "--column=",
+        f"--column={t('setup_format_heading').rstrip(':')}",
     ]
     for lbl, code in _FORMAT_ITEMS:
         args.extend(["TRUE" if code == fmt_norm else "FALSE", lbl])
@@ -397,7 +399,7 @@ def _run_kdialog_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
     if not kdialog:
         return None
     p1 = subprocess.run(
-        [kdialog, "--title", "Soulseek Batch Download", "--inputbox", "Username Soulseek:", existing_user],
+        [kdialog, "--title", "Soulseek Batch Download", "--inputbox", t("setup_user_label"), existing_user],
         capture_output=True,
         text=True,
         check=False,
@@ -407,7 +409,7 @@ def _run_kdialog_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
     username = p1.stdout.strip()
 
     p2 = subprocess.run(
-        [kdialog, "--title", "Soulseek Batch Download", "--password", "Password Soulseek:"],
+        [kdialog, "--title", "Soulseek Batch Download", "--password", t("setup_pass_label")],
         capture_output=True,
         text=True,
         check=False,
@@ -418,7 +420,7 @@ def _run_kdialog_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
 
     start_dir = str(cfg.output_dir if cfg.output_dir.is_dir() else Path.home())
     p3 = subprocess.run(
-        [kdialog, "--title", "Scegli la cartella di download", "--getexistingdirectory", start_dir],
+        [kdialog, "--title", t("setup_dir_dialog"), "--getexistingdirectory", start_dir],
         capture_output=True,
         text=True,
         check=False,
@@ -427,7 +429,7 @@ def _run_kdialog_setup(cfg: PipelineConfig, existing_user: str) -> dict | None:
         return {"confirmed": False}
     chosen_dir = p3.stdout.strip()
 
-    args = [kdialog, "--title", "Soulseek Batch Download", "--radiolist", "formato"]
+    args = [kdialog, "--title", "Soulseek Batch Download", "--radiolist", t("ui_format_label")]
     for lbl, code in _FORMAT_ITEMS:
         args.extend([code, lbl, "on" if code == cfg.convert_format else "off"])
     p4 = subprocess.run(args, capture_output=True, text=True, check=False)
@@ -460,7 +462,7 @@ def _run_kdialog_prompt(
                 "--title",
                 "Soulseek Batch Download",
                 "--inputbox",
-                "Incolla un URL Spotify o YouTube:",
+                t("cli_paste_dialog"),
                 clip,
             ],
             capture_output=True,
@@ -472,7 +474,8 @@ def _run_kdialog_prompt(
         final_url = p_url.stdout.strip()
 
     fmt_norm = normalize_convert_format(default_format)
-    heading = f"{label} — formato" if label else "formato"
+    fmt_lbl = t("ui_format_label")
+    heading = f"{label} — {fmt_lbl}" if label else fmt_lbl
     args = [kdialog, "--title", "Soulseek Batch Download", "--radiolist", heading]
     for lbl, code in _FORMAT_ITEMS:
         args.extend([code, lbl, "on" if code == fmt_norm else "off"])

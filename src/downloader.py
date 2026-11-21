@@ -14,13 +14,14 @@ import unicodedata
 
 from config import PipelineConfig, normalize_convert_format
 from converter import convert_downloaded_flacs
+from i18n import t
 from models import CollectionExport, Track
 from tagger import tag_downloaded_files
 
 
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".aiff", ".aif", ".wav", ".m4a", ".ogg", ".opus", ".alac"}
 MISSING_TRACKS_REPORT_NAME = "BRANI_MANCANTI.txt"
-PROTECTED_REPORT_NAMES = {MISSING_TRACKS_REPORT_NAME.lower()}
+PROTECTED_REPORT_NAMES = {"brani_mancanti.txt", "missing_tracks.txt"}
 
 
 def write_tracks_csv(export: CollectionExport, csv_path: Path, include_length: bool | None = None) -> Path:
@@ -104,9 +105,9 @@ def _rescue_missing_tracks(
     """Run a relaxed, desperate rescue pass for ONLY the missing tracks directly into target_dir."""
     if not missing_tracks:
         return 0
-    names = ", ".join(f"{t.artist} - {t.title}" if t.artist else t.title for t in missing_tracks[:5])
-    suffix = f" (+ altri {len(missing_tracks) - 5})" if len(missing_tracks) > 5 else ""
-    print(f"\n[Recupero] Cerco {len(missing_tracks)} tracce mancanti con ricerca estesa: {names}{suffix}")
+    names = ", ".join(f"{tr.artist} - {tr.title}" if tr.artist else tr.title for tr in missing_tracks[:5])
+    suffix = t("dl_rescue_more", count=len(missing_tracks) - 5) if len(missing_tracks) > 5 else ""
+    print(t("dl_rescue_start", count=len(missing_tracks), names=names, suffix=suffix))
 
     target_dir.mkdir(parents=True, exist_ok=True)
     rescue_export = CollectionExport(
@@ -144,13 +145,13 @@ def _write_missing_tracks_report(
     downloaded_count: int,
     expected_count: int,
 ) -> Path:
-    """Write a readable BRANI_MANCANTI.txt report inside target_dir (intentional exception to audio-only cleanup)."""
+    """Write a readable missing-tracks report inside target_dir (intentional exception to audio-only cleanup)."""
     target_dir.mkdir(parents=True, exist_ok=True)
-    report_path = target_dir / MISSING_TRACKS_REPORT_NAME
+    report_path = target_dir / t("dl_report_filename")
     lines = [
-        "Soulseek Batch Download — Brani non trovati su Soulseek",
-        f"Collezione: {export.name}",
-        f"Scaricati: {downloaded_count}/{expected_count} (mancanti: {len(missing_tracks)})",
+        t("dl_report_header"),
+        t("dl_report_collection", name=export.name),
+        t("dl_report_counts", got=downloaded_count, expected=expected_count, missing=len(missing_tracks)),
         "",
     ]
     for idx, tr in enumerate(missing_tracks, start=1):
@@ -160,7 +161,7 @@ def _write_missing_tracks_report(
         lines.append(f"{idx:02d}. {base}")
     lines.append("")
     report_path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[Controllo tracce] Elenco brani mancanti salvato in: {report_path}")
+    print(t("dl_report_saved", path=report_path))
     return report_path
 
 
@@ -177,43 +178,50 @@ def _verify_and_rescue_tracks(
     if expected_count <= 0:
         return
 
-    report_path = target_dir / MISSING_TRACKS_REPORT_NAME
+    report_candidates = [target_dir / "BRANI_MANCANTI.txt", target_dir / "MISSING_TRACKS.txt"]
     current_audio = _new_audio_files(session_before_files, cfg.output_dir)
     if len(current_audio) >= expected_count:
-        print(f"[Controllo tracce] Completo: {len(current_audio)}/{expected_count} tracce scaricate.")
-        if report_path.is_file():
-            try:
-                report_path.unlink()
-            except OSError:
-                pass
+        print(t("dl_check_complete", got=len(current_audio), expected=expected_count))
+        for rp in report_candidates:
+            if rp.is_file():
+                try:
+                    rp.unlink()
+                except OSError:
+                    pass
         return
 
     if not expected_tracks:
-        print(f"[Controllo tracce] Avviso: scaricate {len(current_audio)}/{expected_count} tracce.")
+        print(t("dl_check_warn", got=len(current_audio), expected=expected_count))
         return
 
     missing = find_missing_tracks(expected_tracks, current_audio)
     if not missing:
-        print(f"[Controllo tracce] Scaricate {len(current_audio)}/{expected_count} tracce.")
+        print(t("dl_check_partial", got=len(current_audio), expected=expected_count))
         return
 
-    print(f"[Controllo tracce] Scaricate {len(current_audio)}/{expected_count} tracce — mancano {len(missing)} brani.")
+    print(t("dl_check_missing", got=len(current_audio), expected=expected_count, missing=len(missing)))
     _rescue_missing_tracks(missing, target_dir, cfg, convert_format)
 
     after_audio = _new_audio_files(session_before_files, cfg.output_dir)
     still_missing = find_missing_tracks(expected_tracks, after_audio)
     if not still_missing or len(after_audio) >= expected_count:
-        print(f"[Controllo tracce] Tutte le {len(after_audio)}/{expected_count} tracce scaricate!")
-        if report_path.is_file():
-            try:
-                report_path.unlink()
-            except OSError:
-                pass
+        print(t("dl_check_rescued_all", got=len(after_audio), expected=expected_count))
+        for rp in report_candidates:
+            if rp.is_file():
+                try:
+                    rp.unlink()
+                except OSError:
+                    pass
     else:
-        missed_list = "; ".join(f"{t.artist} - {t.title}" if t.artist else t.title for t in still_missing)
+        missed_list = "; ".join(f"{tr.artist} - {tr.title}" if tr.artist else tr.title for tr in still_missing)
         print(
-            f"[Controllo tracce] Scaricate {len(after_audio)}/{expected_count} tracce. "
-            f"Non trovate su Soulseek ({len(still_missing)}): {missed_list}"
+            t(
+                "dl_check_still_missing",
+                got=len(after_audio),
+                expected=expected_count,
+                missing=len(still_missing),
+                names=missed_list,
+            )
         )
         _write_missing_tracks_report(
             target_dir=target_dir,
@@ -279,7 +287,7 @@ def _cleanup_non_audio_files(before_files: dict[Path, float], before_dirs: set[P
         except OSError:
             pass
     if removed:
-        print(f"[Pulizia] Rimossi {removed} file non audio.")
+        print(t("dl_cleanup_removed", count=removed))
     return removed
 
 
@@ -413,10 +421,14 @@ def _reveal_after_download(
     before_files: dict[Path, float],
     preferred_dir: Path | None,
 ) -> None:
-    fm_label = "Esplora File" if os.name == "nt" else ("File Manager" if sys.platform.startswith("linux") else "Finder")
+    fm_label = (
+        t("dl_fm_win")
+        if os.name == "nt"
+        else (t("dl_fm_linux") if sys.platform.startswith("linux") else t("dl_fm_mac"))
+    )
     post_audio = _new_audio_files(before_files, cfg.output_dir)
     if len(post_audio) == 1 and post_audio[0].parent == cfg.output_dir:
-        print(f"[{fm_label}] Apro in {fm_label}: {post_audio[0]}")
+        print(t("dl_open_item", fm=fm_label, path=post_audio[0]))
         _open_in_finder(post_audio[0], reveal=True)
         return
 
@@ -433,7 +445,7 @@ def _reveal_after_download(
         target_dir = preferred_dir
 
     if target_dir is not None:
-        print(f"[{fm_label}] Apro cartella in {fm_label}: {target_dir}")
+        print(t("dl_open_folder", fm=fm_label, path=target_dir))
         _open_in_finder(target_dir, reveal=False)
 
 
@@ -460,23 +472,23 @@ def _execute_download(
     ]
 
     if effective_kind == "single_track" and export.tracks:
-        t = export.tracks[0]
-        if not t.artist:
-            query = t.title if "," in t.title else f"title={t.title}"
-            if t.duration_sec and t.duration_sec > 0 and query.startswith("title="):
-                query += f", length={t.duration_sec}"
-        elif "," not in t.artist and "," not in t.title:
-            query = f"artist={t.artist}, title={t.title}"
-            if t.duration_sec and t.duration_sec > 0:
-                query += f", length={t.duration_sec}"
+        tr = export.tracks[0]
+        if not tr.artist:
+            query = tr.title if "," in tr.title else f"title={tr.title}"
+            if tr.duration_sec and tr.duration_sec > 0 and query.startswith("title="):
+                query += f", length={tr.duration_sec}"
+        elif "," not in tr.artist and "," not in tr.title:
+            query = f"artist={tr.artist}, title={tr.title}"
+            if tr.duration_sec and tr.duration_sec > 0:
+                query += f", length={tr.duration_sec}"
         else:
-            query = f"{t.artist} - {t.title}"
-        print(f"[Download] Ricerca traccia singola: {query}")
+            query = f"{tr.artist} - {tr.title}"
+        print(t("dl_single_search", query=query))
         return _run_sockseek([base_cmd[0], query, "-s", *base_cmd[1:]]), cfg.output_dir
 
     if effective_kind == "playlist":
         target_dir = cfg.output_dir / csv_path.stem
-        print(f"[Download] Playlist ({len(export.tracks)} tracce) -> {target_dir}")
+        print(t("dl_playlist_start", count=len(export.tracks), target=target_dir))
         rc = _run_sockseek([base_cmd[0], str(csv_path), *base_cmd[1:]])
         _verify_and_rescue_tracks(export, target_dir, cfg, session_before_files, convert_format)
         return rc, target_dir
@@ -495,8 +507,8 @@ def _execute_download(
     if expected_count >= 2:
         album_cmd.extend(["--album-track-count", f"{expected_count}+"])
 
-    count_label = f" ({expected_count} tracce attese)" if expected_count else ""
-    print(f"[Download] Ricerca cartella Full Album su Soulseek: {album_query}{count_label}")
+    count_label = t("dl_album_expected", count=expected_count) if expected_count else ""
+    print(t("dl_album_start", query=album_query, count_label=count_label))
     before_dirs = {p for p in cfg.output_dir.iterdir() if p.is_dir()}
 
     rc = _run_sockseek(album_cmd)
@@ -504,18 +516,18 @@ def _execute_download(
     _prune_empty_new_dirs(before_dirs, cfg.output_dir)
 
     if rc == 0 and new_audio and (expected_count == 0 or len(new_audio) >= expected_count):
-        print(f"[OK] Full Album completo ({len(new_audio)}/{expected_count or len(new_audio)} tracce) in: {new_audio[0].parent}")
+        print(t("dl_album_complete", got=len(new_audio), expected=expected_count or len(new_audio), dir=new_audio[0].parent))
         return 0, new_audio[0].parent
 
     if not export.tracks:
         if new_audio:
-            print(f"[Avviso] Album scaricato ({len(new_audio)} file) in: {new_audio[0].parent}")
+            print(t("dl_album_partial_no_list", count=len(new_audio), dir=new_audio[0].parent))
             return rc, new_audio[0].parent
-        print("[Errore] Nessuna cartella Full Album trovata e nessuna tracklist disponibile per il fallback.")
+        print(t("dl_album_not_found"))
         return rc or 1, None
 
     if not new_audio:
-        print("\n[Fallback] Cartella Full Album non trovata su Soulseek. Avvio download traccia-per-traccia...")
+        print(t("dl_album_fallback"))
         target_dir = cfg.output_dir / csv_path.stem
         fallback_rc = _run_sockseek([base_cmd[0], str(csv_path), *base_cmd[1:]])
         _verify_and_rescue_tracks(export, target_dir, cfg, session_before_files, convert_format)
@@ -544,16 +556,16 @@ def download_collection(
 ) -> int:
     """Export tracklist CSV, run Sockseek natively without Docker, convert FLAC if requested, tag audio, and open Finder."""
     if not cfg.sockseek_bin.is_file() and not export_only:
-        raise FileNotFoundError(f"Binario sockseek non trovato: {cfg.sockseek_bin}")
+        raise FileNotFoundError(t("dl_bin_missing", path=cfg.sockseek_bin))
     if not cfg.sockseek_conf.is_file() and not export_only:
-        raise FileNotFoundError(f"Configurazione sockseek non trovata: {cfg.sockseek_conf}")
+        raise FileNotFoundError(t("dl_conf_missing", path=cfg.sockseek_conf))
 
     csv_path = cfg.lists_dir / f"{export.name}.csv"
     if export.tracks:
         write_tracks_csv(export, csv_path)
-        print(f"[Export] Salvata lista ({len(export.tracks)} tracce): {csv_path}")
+        print(t("dl_export_csv", count=len(export.tracks), path=csv_path))
     else:
-        print(f"[Export] Album '{export.name}' senza tracklist dettagliata: ricerca diretta su Soulseek.")
+        print(t("dl_export_no_list", name=export.name))
 
     if export_only:
         return 0
@@ -589,7 +601,7 @@ def download_collection(
             try:
                 tag_downloaded_files(post_audio, export, cfg)
             except Exception as exc:
-                print(f"[Tagger] Avviso: tagging saltato ({exc})")
+                print(t("dl_tagger_skipped", exc=exc))
     if open_finder:
         _reveal_after_download(cfg, session_before_files, preferred_dir)
     return rc

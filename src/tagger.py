@@ -25,6 +25,7 @@ import urllib.request
 import uuid
 
 from config import PipelineConfig
+from i18n import t
 from llm_formatter import _mlx_is_available, _parse_llm_json
 from models import CollectionExport, Track
 
@@ -719,7 +720,7 @@ def _try_mlx_tagger_batch(
     if not has_adapter:
         return None
 
-    print("[Tagger] Audit metadati con MiniCPM5-2B-MLX + Tagger LoRA (Apple Silicon Metal)...", flush=True)
+    print(t("tag_mlx_start"), flush=True)
     payload = {
         "model": cfg.mlx_base_model,
         "adapter": str(adapter_dir),
@@ -737,7 +738,7 @@ def _try_mlx_tagger_batch(
         )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip().splitlines()
-            print(f"[Tagger] Avviso MLX: {err[-1] if err else proc.returncode} (uso fallback deterministico)")
+            print(t("tag_mlx_warn", err=err[-1] if err else proc.returncode))
             return None
         parsed_stdout = _parse_llm_json(proc.stdout)
         raw_outputs = parsed_stdout.get("outputs")
@@ -751,7 +752,7 @@ def _try_mlx_tagger_batch(
                 results.append(None)
         return results
     except Exception as exc:
-        print(f"[Tagger] Avviso MLX: {exc} (uso fallback deterministico)")
+        print(t("tag_mlx_warn", err=exc))
         return None
 
 
@@ -1153,7 +1154,7 @@ def tag_downloaded_files(
     if not audio_files:
         return (0, 0, 0)
 
-    print(f"\n[Tagger] Verifica metadati e copertine su {len(audio_files)} brani...")
+    print(t("tag_start", count=len(audio_files)))
 
     probed_list = [probe_audio_tags(cfg.ffprobe_bin, p) for p in audio_files]
     matched_tracks = _match_files_to_tracks(probed_list, export.tracks)
@@ -1166,7 +1167,7 @@ def tag_downloaded_files(
             needs_any = [True] * len(probed_list)
 
     if not any(needs_any):
-        print(f"[Tagger] Tutti i {len(audio_files)} brani hanno già metadati e copertine corretti.")
+        print(t("tag_all_ok", count=len(audio_files)))
         return (0, len(audio_files), 0)
 
     # Gather ground-truth candidates only for tracks that need repair (or album cohesion).
@@ -1250,19 +1251,15 @@ def tag_downloaded_files(
         )
         if ok:
             updated += 1
-            cov_note = " + copertina" if will_embed_cover else ""
+            cov_note = t("tag_cover_note") if will_embed_cover else ""
             trk_note = f" #{dec.track_number}/{dec.total_tracks}" if (dec.track_number and dec.total_tracks) else (
                 f" #{dec.track_number}" if dec.track_number else ""
             )
             print(f"  [OK] {pf.path.name} -> {dec.artist} - {dec.title} [{dec.album}{trk_note}]{cov_note}")
         else:
             failed += 1
-            print(f"  [Avviso] Impossibile aggiornare tag di {pf.path.name} (file originale mantenuto)")
+            print(t("tag_write_fail", name=pf.path.name))
 
-    print(
-        f"[Tagger] Verificati {len(audio_files)} brani: "
-        f"{updated} aggiornati, {already_ok} già perfetti"
-        + (f", {failed} errori" if failed else "")
-        + "."
-    )
+    err_part = t("tag_summary_err", failed=failed) if failed else ""
+    print(t("tag_summary", total=len(audio_files), updated=updated, ok=already_ok, err_part=err_part))
     return (updated, already_ok, failed)

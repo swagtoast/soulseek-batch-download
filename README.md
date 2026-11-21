@@ -1,10 +1,16 @@
-# Soulseek Batch Download (macOS, Linux & Windows — senza Docker)
+# Soulseek Batch Download (macOS, Linux & Windows — Zero Docker)
 
-Pipeline nativa e leggera per **macOS** (Apple Silicon & Intel), **Linux** (`x86_64` / `aarch64`, X11 & Wayland) e **Windows 10/11** per scaricare playlist, full album e brani da **Spotify** e **YouTube** tramite **Soulseek**, senza Docker, senza Homebrew/Winget e senza diritti di amministratore (`sudo`).
+A lightweight, native pipeline for **macOS** (Apple Silicon & Intel), **Linux** (`x86_64` / `aarch64`, X11 & Wayland), and **Windows 10/11** to organize, convert, and tag albums, playlists, and tracks sourced from **Spotify** and **YouTube** links via **Soulseek** — with zero Docker, zero Homebrew/Winget, and zero administrator (`sudo`) privileges required.
 
-## Installazione rapida (1 comando)
+> **Purpose & Fair-Use Notice**
+>
+> This project is **not** an invitation to pirate music. It is designed to simplify the creation and curation of a **hybrid personal music library**, where listeners who already own a **physical edition** of a cultural object (vinyl, CD, cassette, etc.) want a clean, lossless, accurately tagged **digital companion copy** for everyday listening, archiving, or DJing without having to manually rip and tag every disc by hand. Please support independent artists, musicians, and record labels by purchasing their physical releases and official digital editions.
 
-### macOS & Linux (Terminale — stesso comando per entrambi!)
+---
+
+## Quick Install (1 Command)
+
+### macOS & Linux (Terminal — same command for both)
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/swagtoast/soulseek-batch-download/main/install.sh)
 ```
@@ -14,45 +20,56 @@ bash <(curl -fsSL https://raw.githubusercontent.com/swagtoast/soulseek-batch-dow
 irm https://raw.githubusercontent.com/swagtoast/soulseek-batch-download/main/install.ps1 | iex
 ```
 
-Su **Linux** rileva automaticamente architettura (`x86_64` / `aarch64`), distro, RAM, core, display server (`Wayland` / `X11` / headless) e interfaccia nativa migliore (`tkinter` a finestra unica, `zenity` GTK, `kdialog` KDE o terminale). Installa tutto senza `sudo` in `~/.local/share/soulseek-batch-download`, crea il comando `soulseek-batch`, l'icona nel menu applicazioni, il protocollo `soulseekdl://`, il **pulsante fluttuante nativo** (evidenzia o copia un link Spotify/YouTube ovunque → `Scarica con Soulseek`) e include `browser-extension/` per il tasto destro puro su Chrome/Brave/Edge/Firefox.
+Each installer automatically profiles your machine (**OS, CPU architecture, core count, RAM, and desktop environment**) and installs only the missing standalone binaries (`sockseek`, `yt-dlp`, `deno`, static `ffmpeg` + `ffprobe`, and a standalone Python 3 runtime if needed):
+- **macOS**: installs to `~/Applications/Soulseek Batch Download`, applies the custom app icon, compiles single-window Swift AppKit dialogs on Apple Silicon / high-spec Macs (or uses instant 0%-CPU native AppleScript dialogs on lighter Intel Macs), and registers the macOS **Right-Click → Services → Scarica con Soulseek / Download with Soulseek** workflow.
+- **Linux**: installs to `~/.local/share/soulseek-batch-download` (zero `sudo`), adds the global `soulseek-batch` CLI command, desktop menu entry with icon, `soulseekdl://` URI handler, 3-tier native GUI (`tkinter` → `zenity` → `kdialog` → terminal), a lightweight X11/Wayland highlight-or-copy floating pill, and `browser-extension/` for pure browser right-click.
+- **Windows 10/11**: installs to `%LOCALAPPDATA%\Soulseek Batch Download` (~465 MB on a clean PC, zero admin), creates Desktop & Start Menu shortcuts, registers `soulseekdl://`, starts the native WinForms/UI-Automation floating pill (highlight or copy any Spotify/YouTube link anywhere, or press `Ctrl+Alt+S`), and bundles `browser-extension/` for Chrome/Edge/Firefox right-click.
 
-Su **Windows** installa tutto in `%LOCALAPPDATA%\Soulseek Batch Download` (~465 MB su PC pulito, zero admin), crea l'icona sul Desktop/Start, registra il protocollo `soulseekdl://`, attiva il **pulsante fluttuante nativo** (evidenzia o copia un link Spotify/YouTube in qualsiasi app → compare subito **`Scarica con Soulseek`** vicino al cursore, oppure `Ctrl+Alt+S`) e include la cartella `browser-extension/` per il tasto destro puro su Chrome/Edge/Firefox.
+---
 
-Al termine dell'installazione si apre automaticamente (e **solo al primo avvio**) la finestra nativa dove inserire:
-- **Username** e **Password** Soulseek (salvati in locale con permessi `600`, solo proprietario)
-- **Cartella di download**, scegliendola direttamente dal Finder con il pulsante **Sfoglia…**
-- **Formato**: menu a tendina unico `.flac (lossless)`, `.aiff (PCM 24-bit lossless)` o `.mp3 (320 kbps)` (con `.mp3` cerca prima MP3 320 kbps leggeri su Soulseek; in caso di conversione elimina in automatico il `.flac` originale; con `.flac` salta la conversione)
+## Features
 
-In tutte le sessioni successive non dovrai scegliere più nulla!
+- **Native Bilingual Support (Italian & English)**: automatically detects your operating system language — if your system is set to **Italian**, the entire UI (native dialogs, terminal output, floating pill, browser extension, and missing-tracks report) switches to Italian; for every other system language it automatically uses **English** (can be overridden with `SLSK_LANG=it` or `SLSK_LANG=en`).
+- **Auto-Update on Every Launch**: checks GitHub in ~0.15s via HTTP `ETag 304` (zero API quota usage, `2s` timeout) and updates code cleanly while preserving credentials, configs, downloads, and custom icons (skip with `--no-update`).
+- **First-Run-Only Setup**: Soulseek credentials (saved locally with owner-only `600` permissions) and your download folder (chosen via native Finder / File Explorer / GTK / KDE **Browse…** picker) are requested only once (reopen anytime with `--setup`).
+- **Single-Window Format Picker on Every Download**: choose between **`.flac (lossless)`**, **`.aiff (PCM 24-bit lossless)`**, or **`.mp3 (320 kbps)`**.
+  - Selecting `.mp3` instructs `sockseek` to prefer 320 kbps MP3s (`--pref-format mp3 --pref-min-bitrate 320 --pref-max-bitrate 320`); any `.flac`, `.wav`, `.aiff`, `.m4a`, `.ogg`, or `.opus` returned by Soulseek is automatically converted to **MP3 320 kbps CBR** and the source file is removed after `ffprobe` verification.
+  - Selecting `.aiff` converts `.flac`/`.wav` sources into **24-bit PCM AIFF** while leaving already-downloaded `.mp3` files untouched.
+  - Selecting `.flac` converts uncompressed `.wav`/`.aiff` sources losslessly into **FLAC** and leaves `.flac` and `.mp3` untouched.
+- **Spotify & YouTube / YouTube Music Extraction**:
+  - **Spotify**: public playlists, full albums, and single tracks work out-of-the-box without an API key via the public Embed fallback (optional Spotify API credentials in `config/pipeline.json` unlock >100-track playlists).
+  - **YouTube & YouTube Music**: playlists, album playlists (`OLAK5uy_...` / `browse/MPREb_...`), full-album videos (automatically inspects **chapters, video description, and top pinned/popular comments** to recover complete tracklists), and single videos.
+  - Supports an optional local **MiniCPM5-2B-MLX** LoRA adapter on Apple Silicon (0 MB idle RAM), on-demand **Ollama**, and a zero-dependency built-in heuristic parser on all other machines.
+- **Track-Count Verification, Missing-Track Rescue & Report**:
+  - Verifies that every expected track in an album or playlist was actually downloaded; if any track is missing (even the very last track), automatically runs a targeted relaxed rescue pass (`--desperate --remove-ft --remove-brackets --length-tol -1`) into the same folder.
+  - Keeps destination folders strictly clean (audio files only — automatically deletes `.nfo`, `.log`, `.cue`, `_index.csv`, loose cover files, and empty `Artwork/` folders), with **one intentional exception**: if any tracks still could not be found after the rescue pass, writes **`MISSING_TRACKS.txt`** (or **`BRANI_MANCANTI.txt`** in Italian) inside the destination folder listing the exact missing tracks.
+- **Automatic Cross-Format Audio Tagger & Cover-Art Embedder (`.flac`, `.aiff`, `.mp3`, `.m4a`, `.wav`)**:
+  - Audits every downloaded track via `ffprobe` for clean `artist`, `album`, `album_artist`, `title`, disc track order (`track_number/total_tracks`, `disc_number`), `date`, and embedded **cover art**.
+  - Enriches missing or noisy tags via native Spotify metadata, **iTunes Search API**, and **MusicBrainz + Cover Art Archive** (zero LLM required on standard PCs — 0 MB extra footprint; optionally leverages a local fine-tuned MiniCPM5-2B-MLX Tagger LoRA on Apple Silicon when present).
+  - For mixed playlists, tags each track with its **true original studio album** metadata and artwork, rejecting generic *"Greatest Hits"* / *"Now That's What I Call Music"* compilations.
+  - Writes all tags and cover art **losslessly** via `ffmpeg -c:a copy` (zero audio re-encoding). Disable with `--no-tag`.
+- **Automatic File Manager Reveal**: opens the downloaded album/playlist folder (or selects a single track) in **Finder** (macOS), **File Explorer** (Windows), or your **File Manager** (`xdg-open` / `nautilus` / `dolphin` on Linux) when finished.
 
-L'installer scarica automaticamente tutto in `~/Applications/Soulseek Batch Download` senza richiedere `sudo`, Homebrew o Xcode:
-- `sockseek` v3.0.6 nativo per macOS (`arm64` / `x64`)
-- `yt-dlp` + `deno` standalone (solo se non già presenti)
-- `ffmpeg` + `ffprobe` statici per la conversione `FLAC → AIFF / MP3 320 kbps` (solo se non già presenti)
-- Runtime Python 3 standalone (solo se non già presente)
-- Servizio macOS **tasto destro → Servizi → Scarica con Soulseek**
+---
 
-## Funzionalità
+## Usage
 
-- **Auto-aggiornamento ad ogni avvio**: ad ogni esecuzione (sia da `.command` sia da **tasto destro → Servizi → Scarica con Soulseek**) verifica GitHub in ~0,15s tramite `ETag` HTTP `304` (zero consumo rate-limit, timeout `2s`) e si aggiorna da solo preservando credenziali, configurazioni, download e icona personalizzata (disattivabile con `--no-update`).
-- **Auto-ottimizzazione per ogni Mac**: rileva automaticamente architettura (`Apple Silicon` / `Intel`), RAM, core CPU e versione macOS per scegliere l'interfaccia nativa più veloce (finestra AppKit Swift su Apple Silicon/Mac potenti, dialog nativi macOS a 0% CPU e zero compilazione su Mac Intel più leggeri), calibrare i thread `yt-dlp` ed evitare di caricare modelli LLM troppo pesanti su Mac da 8 GB di RAM.
-- **Setup credenziali e cartella solo al primo avvio (Finder `Sfoglia…`)**: username, password e cartella di download si configurano una sola volta (puoi riaprirli quando vuoi con `--setup`).
-- **Scelta formato in un'unica finestra ad ogni download**: per qualsiasi link **Spotify** o **YouTube** (playlist, full album o brano singolo) compare una sola finestra compatta **`formato`** (`.flac (lossless)`, `.aiff (PCM 24-bit lossless)`, `.mp3 (320 kbps)`). Se scegli `.mp3`, `sockseek` cerca preferibilmente MP3 320 kbps leggeri invece dei FLAC; se scarica un `.flac` da convertire, elimina il file originale automaticamente.
-- **Cartelle pulite (solo file audio)**: disabilita `_index.csv` e rimuove immediatamente eventuali file non audio scaricati con gli album (`.jpg`, `.png`, `.nfo`, `.txt`, `.log`, `.cue`, cartelle `Artwork/` vuote, ecc.). Unica eccezione: se al termine del recupero mancano ancora brani non trovati su Soulseek, salva **`BRANI_MANCANTI.txt`** dentro la cartella d'arrivo con l'elenco esatto delle tracce mancanti.
-- **Spotify**: playlist pubbliche, full album e tracce singole (funziona out-of-the-box senza API key grazie al fallback Embed pubblico; opzionalmente supporta anche API key in `config/pipeline.json` per playlist da >100 brani).
-- **YouTube & YouTube Music**: playlist, playlist album (`OLAK5uy_...` / `browse/MPREb_...`), video full album (cerca automaticamente la tracklist in **capitoli, descrizione e primi commenti fissati/più votati** con guardrail anti-tracce perse) e brani singoli.
-  - Supporta **MiniCPM5-2B-MLX** con adapter LoRA fine-tuned su Apple Silicon Metal (`1.3 GB`, 0 MB in idle), **Ollama** on-demand (preferendo `minicpm5-2b` prima di `qwen2.5`, con `keep_alive: 0`) e **parser locale integrato** zero-dipendenze se nessun LLM locale è presente.
-- **Controllo numero tracce & recupero automatico (Album e Playlist)**: verifica sempre che i file scaricati corrispondano al numero atteso di tracce (sia Spotify sia YouTube); se manca anche un solo brano (es. l'ultima traccia o un album incompleto), avvia automaticamente un passaggio mirato di recupero (`--desperate --remove-ft --remove-brackets --length-tol -1`) nella stessa cartella.
-- **Conversione automatica `FLAC → AIFF (24-bit)` o `MP3 (320 kbps)`**: selettore nativo per convertire automaticamente i soli `.flac` scaricati nella sessione (preservando tag ID3v2.3 + copertina), eliminando i `.flac` originali e lasciando intatti gli `.mp3`.
-- **Tagger automatico multi-formato (`.flac`, `.aiff`, `.mp3`, `.m4a`, `.wav`)**: al termine di download e conversione verifica automaticamente ogni traccia via `ffprobe` (`artista`, `album`, `artista album`, `titolo`, `ordine nel disco` `N/Tot`, `anno` e **copertina incorporata**). In caso di metadati mancanti o sporchi interroga Spotify, iTunes Search API e MusicBrainz / Cover Art Archive, normalizza tramite **MiniCPM5-2B-MLX + Tagger LoRA** (addestrato su libreria iTunes gold-standard, con fallback deterministico su Intel/Windows) e riscrive i tag **senza ricodifica audio** (`ffmpeg -c:a copy`). Nelle playlist miste tagga ogni brano con i metadati e la copertina del suo **vero album originale** (evitando compilation "Greatest Hits" / "Now That's What I Call Music"). Disattivabile con `--no-tag`.
-- **Apertura automatica nel Finder**: al termine di download, conversione e tagging apre la cartella scaricata (o seleziona il file singolo) nel Finder / Esplora File.
-
-## Come si usa
-
-1. **Menu Servizi macOS (zero click superflui)**: evidenzia un link Spotify o YouTube in qualsiasi app → **tasto destro → Servizi → Scarica con Soulseek**. Parte immediatamente con le impostazioni salvate al primo avvio!
-2. **Doppio click** su `Soulseek Batch Pipeline.command` dentro `~/Applications/Soulseek Batch Download` per incollare un link.
-3. **Da terminale**:
+1. **Quick Trigger (Highlight / Right-Click)**:
+   - **macOS**: highlight any Spotify or YouTube link → **Right-Click → Services → Scarica con Soulseek**.
+   - **Windows & Linux**: highlight or copy any Spotify or YouTube link → click the floating **`Download with Soulseek`** pill (or load `browser-extension/` in Chrome / Brave / Edge / Firefox for pure right-click context menu support via `soulseekdl://`).
+2. **Launcher Icon**:
+   - **macOS**: double-click `Soulseek Batch Pipeline.command` inside `~/Applications/Soulseek Batch Download`.
+   - **Linux**: open **Soulseek Batch Download** from your app menu, or run `soulseek-batch`.
+   - **Windows**: double-click **Soulseek Batch Download** on your Desktop or Start Menu.
+3. **Command Line**:
    ```bash
+   # macOS
    "$HOME/Applications/Soulseek Batch Download/Soulseek Batch Pipeline.command" "URL"
+
+   # Linux
+   soulseek-batch "URL"
+
+   # Windows (PowerShell)
+   & "$env:LOCALAPPDATA\Soulseek Batch Download\Soulseek Batch Pipeline.bat" "URL"
    ```
-   Opzioni utili: `--setup` (riapre la configurazione iniziale), `--export-only`, `--mode auto|album|tracks`, `--convert flac|aiff|mp3` (`--convert-aiff`, `--convert-mp3`, `--no-convert`), `--no-tag`, `--no-finder`, `--no-gui`.
+   Useful flags: `--setup`, `--export-only`, `--mode auto|album|tracks`, `--convert flac|aiff|mp3` (`--convert-aiff`, `--convert-mp3`, `--no-convert`), `--no-tag`, `--no-finder`, `--no-gui`, `--update`, `--no-update`.
