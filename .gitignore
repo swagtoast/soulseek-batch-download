@@ -2,6 +2,7 @@ bin/
 models/
 runtime/
 lists/
+queue/
 config/sockseek.conf
 config/pipeline.json
 config/.update_state.json

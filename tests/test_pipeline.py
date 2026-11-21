@@ -426,17 +426,18 @@ class FirstRunSetupTests(unittest.TestCase):
                 tracks=[Track(artist="A", title="B")],
             )
             for url, expected_label, chosen_fmt in cases:
-                with patch("cli.load_config", return_value=cfg):
-                    with patch("cli.is_first_run_needed", return_value=False):
-                        with patch("cli.ensure_configured", return_value=cfg):
-                            with patch("cli._can_use_gui_prompt", return_value=True):
-                                with patch(
-                                    "cli._prompt_with_gui",
-                                    return_value=(True, url, chosen_fmt),
-                                ) as mock_prompt:
-                                    with patch("cli.extract_collection", return_value=fake_export):
-                                        with patch("cli.download_collection", return_value=0) as mock_dl:
-                                            rc = cli.main(["--no-update", url])
+                with patch.dict("os.environ", {"SLSK_LANG": "it", "SLSK_NO_CAFFEINATE": "1"}, clear=False):
+                    with patch("cli.load_config", return_value=cfg):
+                        with patch("cli.is_first_run_needed", return_value=False):
+                            with patch("cli.ensure_configured", return_value=cfg):
+                                with patch("cli._can_use_gui_prompt", return_value=True):
+                                    with patch(
+                                        "cli._prompt_with_gui",
+                                        return_value=(True, url, chosen_fmt),
+                                    ) as mock_prompt:
+                                        with patch("cli.extract_collection", return_value=fake_export):
+                                            with patch("cli.download_collection", return_value=0) as mock_dl:
+                                                rc = cli.main(["--no-update", url])
                 self.assertEqual(rc, 0)
                 mock_prompt.assert_called_once()
                 self.assertEqual(mock_prompt.call_args.kwargs.get("label"), expected_label)
@@ -1424,6 +1425,101 @@ class I18nTests(unittest.TestCase):
             self.assertEqual(cli._describe_source_url("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy"), "Full Album Spotify rilevato")
 
         i18n.reset_lang_cache()
+
+
+class DownloadQueueTests(unittest.TestCase):
+    def test_concurrent_launches_enqueue_and_drain_in_fifo_order_with_per_item_formats(self) -> None:
+        from queue_manager import QueueJob, get_queue_dir, list_pending_jobs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.project_root = root
+
+            executed: list[tuple[str, str]] = []
+            secondary_results: list[tuple[int, bool]] = []
+
+            def fake_run_single(job: QueueJob, _cfg, export_only: bool = False) -> int:
+                executed.append((job.url, job.convert_format))
+                # While Job 1 is actively downloading (holding the OS flock), two other windows trigger downloads!
+                if len(executed) == 1:
+                    r2 = cli._run_or_enqueue_jobs(
+                        [QueueJob(url="https://open.spotify.com/album/second", convert_format="mp3")],
+                        cfg,
+                        use_queue=True,
+                    )
+                    r3 = cli._run_or_enqueue_jobs(
+                        [QueueJob(url="https://open.spotify.com/playlist/third", convert_format="aiff")],
+                        cfg,
+                        use_queue=True,
+                    )
+                    secondary_results.extend([r2, r3])
+                return 0
+
+            with patch.dict("os.environ", {"SLSK_NO_CAFFEINATE": "1"}, clear=False):
+                with patch("cli._run_single_job", side_effect=fake_run_single):
+                    rc, enqueued_only = cli._run_or_enqueue_jobs(
+                        [QueueJob(url="https://open.spotify.com/album/first", convert_format="flac")],
+                        cfg,
+                        use_queue=True,
+                    )
+
+            self.assertEqual((rc, enqueued_only), (0, False))
+            self.assertEqual(secondary_results, [(0, True), (0, True)])
+            self.assertEqual(
+                executed,
+                [
+                    ("https://open.spotify.com/album/first", "flac"),
+                    ("https://open.spotify.com/album/second", "mp3"),
+                    ("https://open.spotify.com/playlist/third", "aiff"),
+                ],
+            )
+            self.assertEqual(list_pending_jobs(get_queue_dir(root)), [])
+
+    def test_overnight_queue_continues_after_error_and_clear_queue_works(self) -> None:
+        from queue_manager import QueueJob, clear_pending_jobs, enqueue_job, get_queue_dir, list_pending_jobs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = load_config(root / "config" / "pipeline.json")
+            cfg.project_root = root
+            qdir = get_queue_dir(root)
+
+            # Test clear_pending_jobs
+            enqueue_job(qdir, QueueJob(url="https://open.spotify.com/album/cancel1"))
+            enqueue_job(qdir, QueueJob(url="https://open.spotify.com/album/cancel2"))
+            self.assertEqual(len(list_pending_jobs(qdir)), 2)
+            self.assertEqual(clear_pending_jobs(qdir), 2)
+            self.assertEqual(list_pending_jobs(qdir), [])
+
+            # Test overnight resilience: Job 1 raises, Jobs 2 & 3 still execute!
+            executed: list[str] = []
+
+            def fake_run(job: QueueJob, _cfg, export_only: bool = False) -> int:
+                executed.append(job.url)
+                if job.url.endswith("/broken"):
+                    raise RuntimeError("temporary network failure")
+                return 0
+
+            jobs = [
+                QueueJob(url="https://open.spotify.com/album/broken", convert_format="flac"),
+                QueueJob(url="https://open.spotify.com/album/ok2", convert_format="mp3"),
+                QueueJob(url="https://open.spotify.com/album/ok3", convert_format="aiff"),
+            ]
+            with patch.dict("os.environ", {"SLSK_NO_CAFFEINATE": "1"}, clear=False):
+                with patch("cli._run_single_job", side_effect=fake_run):
+                    rc, enqueued_only = cli._run_or_enqueue_jobs(jobs, cfg, use_queue=True)
+
+            self.assertEqual(enqueued_only, False)
+            self.assertEqual(rc, 1)  # Reports non-zero because 1 item failed
+            self.assertEqual(
+                executed,
+                [
+                    "https://open.spotify.com/album/broken",
+                    "https://open.spotify.com/album/ok2",
+                    "https://open.spotify.com/album/ok3",
+                ],
+            )
 
 
 if __name__ == "__main__":

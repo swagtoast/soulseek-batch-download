@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import urllib.parse
 
 # Ensure sibling modules under src/ resolve cleanly regardless of cwd.
@@ -19,6 +20,18 @@ from config import PipelineConfig, load_config, normalize_convert_format, save_c
 from downloader import download_collection
 from i18n import t
 from models import CollectionExport
+from queue_manager import (
+    QueueJob,
+    QueueLock,
+    SleepInhibitor,
+    clear_pending_jobs,
+    enqueue_job,
+    get_queue_dir,
+    list_pending_files,
+    list_pending_jobs,
+    pop_next_job,
+    read_active_info,
+)
 from setup_ui import ensure_configured, is_first_run_needed
 from spotify_extractor import extract_spotify
 from updater import check_and_apply_update
@@ -258,40 +271,164 @@ def _prompt_with_gui(
     return None
 
 
+def _run_single_job(job: QueueJob, cfg: PipelineConfig, export_only: bool = False) -> int:
+    export = extract_collection(job.url, cfg)
+    print_summary(export)
+    return download_collection(
+        export,
+        cfg,
+        export_only=export_only,
+        force_mode=job.mode,
+        convert_format=job.convert_format,
+        delete_original=job.delete_original,
+        open_finder=job.open_finder,
+        auto_tag=job.auto_tag,
+    )
+
+
+def _run_or_enqueue_jobs(
+    jobs: list[QueueJob],
+    cfg: PipelineConfig,
+    export_only: bool = False,
+    use_queue: bool = True,
+) -> tuple[int, bool]:
+    """Run jobs immediately if idle (draining any jobs added while running), or enqueue them if busy.
+
+    Returns (exit_code, enqueued_only).
+    """
+    if not jobs:
+        return (0, False)
+
+    if export_only or not use_queue:
+        last_rc = 0
+        for job in jobs:
+            try:
+                last_rc = _run_single_job(job, cfg, export_only=export_only)
+            except KeyboardInterrupt:
+                print(t("cli_interrupted"))
+                return (130, False)
+            except Exception as exc:
+                print(t("cli_error", exc=exc))
+                last_rc = 1
+        return (last_rc, False)
+
+    queue_dir = get_queue_dir(cfg.project_root)
+    lock = QueueLock(queue_dir)
+    current_job: QueueJob | None = None
+
+    if lock.try_acquire():
+        current_job = jobs[0]
+        for extra in jobs[1:]:
+            enqueue_job(queue_dir, extra)
+    else:
+        last_pos = 1
+        for job in jobs:
+            _, last_pos = enqueue_job(queue_dir, job)
+        # Re-check lock once to prevent losing a job if the previous worker released right before enqueue_job.
+        if lock.try_acquire():
+            current_job = pop_next_job(queue_dir)
+        else:
+            if len(jobs) == 1:
+                print(t("q_enqueued", pos=last_pos, url=jobs[0].url, fmt=jobs[0].convert_format))
+            else:
+                print(t("q_enqueued_multi", count=len(jobs), total=len(list_pending_files(queue_dir))))
+            print(t("q_enqueued_hint"))
+            return (0, True)
+
+    total_run = 0
+    ok_count = 0
+    failed_count = 0
+    last_rc = 0
+    with lock:
+        with SleepInhibitor():
+            while current_job is not None:
+                lock.write_active_info(current_job)
+                total_run += 1
+                try:
+                    job_rc = _run_single_job(current_job, cfg, export_only=False)
+                except KeyboardInterrupt:
+                    print(t("cli_interrupted"))
+                    return (130, False)
+                except Exception as exc:
+                    print(t("cli_error", exc=exc))
+                    job_rc = 1
+
+                last_rc = job_rc
+                if job_rc == 0:
+                    ok_count += 1
+                else:
+                    failed_count += 1
+
+                next_job = pop_next_job(queue_dir)
+                if next_job is not None:
+                    remaining = len(list_pending_files(queue_dir))
+                    print(t("q_next", remaining=remaining))
+                    print(t("q_next_item", url=next_job.url, fmt=next_job.convert_format))
+                current_job = next_job
+
+    if total_run > 1:
+        if failed_count == 0:
+            print(t("q_done_ok", ok=ok_count, total=total_run))
+        else:
+            print(t("q_done_partial", ok=ok_count, total=total_run, failed=failed_count))
+    return (0 if failed_count == 0 else (last_rc or 1), False)
+
+
+def _print_queue_status(cfg: PipelineConfig) -> int:
+    queue_dir = get_queue_dir(cfg.project_root)
+    active = read_active_info(queue_dir)
+    pending = list_pending_jobs(queue_dir)
+    if active is None:
+        print(t("q_status_idle", pending=len(pending)))
+    else:
+        print(
+            t(
+                "q_status_active",
+                url=active.get("url") or "?",
+                fmt=active.get("convert_format") or "flac",
+                pid=active.get("pid") or "?",
+                pending=len(pending),
+            )
+        )
+    for idx, job in enumerate(pending, start=1):
+        print(f"  {idx:02d}. {job.url} [.{job.convert_format}]")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="soulseek-pipeline",
-        description="Esporta playlist/album da Spotify o YouTube e scarica da Soulseek senza Docker.",
+        description="Export playlists/albums from Spotify or YouTube and download via Soulseek without Docker.",
     )
-    parser.add_argument("url", nargs="?", help="URL Spotify o YouTube (playlist, album o video full album)")
-    parser.add_argument("--setup", action="store_true", help="Apri la finestra di configurazione iniziale")
-    parser.add_argument("--export-only", action="store_true", help="Esporta solo il file CSV senza avviare Soulseek")
+    parser.add_argument("urls", nargs="*", help="One or more Spotify/YouTube URLs (playlist, album, or full album video)")
+    parser.add_argument("--setup", action="store_true", help="Open the initial setup dialog")
+    parser.add_argument("--export-only", action="store_true", help="Export tracklist CSV only without running Soulseek")
     parser.add_argument(
         "--mode",
         choices=("auto", "album", "tracks"),
         default="auto",
-        help="Forza modalità Full Album o traccia-per-traccia (default: auto)",
+        help="Force Full Album or track-by-track mode (default: auto)",
     )
     parser.add_argument(
         "--convert",
         dest="convert_format",
         choices=("flac", "none", "aiff", "mp3"),
         default=None,
-        help="Formato desiderato: flac (nessuna conversione), aiff (PCM 24-bit) o mp3 (320 kbps)",
+        help="Target format: flac (lossless), aiff (24-bit PCM), or mp3 (320 kbps)",
     )
     parser.add_argument(
         "--convert-aiff",
         dest="convert_format",
         action="store_const",
         const="aiff",
-        help="Scorciatoia per --convert aiff (FLAC -> AIFF 24-bit)",
+        help="Shortcut for --convert aiff (24-bit AIFF)",
     )
     parser.add_argument(
         "--convert-mp3",
         dest="convert_format",
         action="store_const",
         const="mp3",
-        help="Scorciatoia per --convert mp3 (FLAC -> MP3 320 kbps)",
+        help="Shortcut for --convert mp3 (320 kbps MP3)",
     )
     parser.add_argument(
         "--no-convert",
@@ -299,36 +436,48 @@ def main(argv: list[str] | None = None) -> int:
         dest="convert_format",
         action="store_const",
         const="flac",
-        help="Mantiene i .flac originali senza convertirli",
+        help="Keep lossless FLAC format",
     )
     parser.add_argument(
         "--delete-original",
         dest="delete_original",
         action="store_true",
         default=None,
-        help="Elimina il file .flac originale dopo la conversione verificata",
+        help="Delete original source audio after verified conversion",
     )
     parser.add_argument(
         "--keep-original",
         dest="delete_original",
         action="store_false",
-        help="Mantiene il file .flac originale dopo la conversione",
+        help="Keep original source audio after conversion",
     )
-    parser.add_argument("--no-gui", action="store_true", help="Disabilita finestre grafiche di input/setup")
-    parser.add_argument("--no-finder", action="store_true", help="Non aprire il Finder al termine del download")
-    parser.add_argument("--no-tag", action="store_true", help="Salta verifica e correzione automatica dei metadati/copertine")
-    parser.add_argument("--update", action="store_true", help="Controlla e installa subito eventuali aggiornamenti da GitHub")
-    parser.add_argument("--no-update", action="store_true", help="Salta il controllo automatico aggiornamenti")
-    parser.add_argument("--pause", action="store_true", help="Attendi Invio alla fine (utile da .command)")
+    parser.add_argument("--no-gui", action="store_true", help="Disable GUI dialogs")
+    parser.add_argument("--no-finder", action="store_true", help="Do not open Finder/File Manager after download")
+    parser.add_argument("--no-tag", action="store_true", help="Skip automatic audio tagging & cover art embedding")
+    parser.add_argument("--no-queue", action="store_true", help="Bypass the download queue lock")
+    parser.add_argument("--queue-status", action="store_true", help="Show active download and pending queue items")
+    parser.add_argument("--clear-queue", action="store_true", help="Clear all pending items from the download queue")
+    parser.add_argument("--update", action="store_true", help="Check and apply GitHub updates immediately")
+    parser.add_argument("--no-update", action="store_true", help="Skip automatic update check")
+    parser.add_argument("--pause", action="store_true", help="Wait for Enter on exit (useful from .command/.bat/.sh)")
     args = parser.parse_args(argv)
 
     cfg = load_config()
 
-    # Lightweight auto-update check (at most once every 6h; skipped on local git checkouts unless --update).
+    if args.queue_status:
+        return _print_queue_status(cfg)
+    if args.clear_queue:
+        removed = clear_pending_jobs(get_queue_dir(cfg.project_root))
+        print(t("q_cleared", count=removed) if removed else t("q_empty"))
+        return 0
+
+    raw_urls = [u for u in (_unwrap_protocol_url(item) for item in (args.urls or [])) if u]
+
+    # Lightweight auto-update check on every launch via HTTP ETag 304.
     if args.update or (not args.no_update and not args.export_only):
         updated = check_and_apply_update(cfg, force=args.update)
         if updated:
-            if args.update and not args.url and not args.setup:
+            if args.update and not raw_urls and not args.setup:
                 return 0
             # Re-exec transparently with the freshly updated code (only when running as main CLI).
             if argv is None:
@@ -338,12 +487,12 @@ def main(argv: list[str] | None = None) -> int:
                     proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), *restart_args], check=False)
                     return proc.returncode
                 os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *restart_args])
-        elif args.update and not args.url and not args.setup:
+        elif args.update and not raw_urls and not args.setup:
             return 0
 
     did_first_run_setup = False
 
-    # First-run-only setup (Soulseek credentials + Finder/Explorer "Sfoglia..." folder picker).
+    # First-run-only setup (Soulseek credentials + Finder/Explorer folder picker).
     if args.setup or not args.export_only:
         was_unconfigured = is_first_run_needed(cfg)
         updated_cfg = ensure_configured(cfg, force_setup=args.setup, no_gui=args.no_gui)
@@ -352,14 +501,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         cfg = updated_cfg
         did_first_run_setup = was_unconfigured or args.setup
-        if args.setup and not args.url:
+        if args.setup and not raw_urls:
             return 0
 
-    raw_input = _unwrap_protocol_url(args.url)
     convert_format = cfg.convert_format if args.convert_format is None else normalize_convert_format(args.convert_format)
     interactive = False
 
-    if not raw_input:
+    if not raw_urls:
         interactive = True
         gui_res = None
         if _can_use_gui_prompt(cfg, args.no_gui) and not args.export_only:
@@ -369,54 +517,68 @@ def main(argv: list[str] | None = None) -> int:
             if not confirmed:
                 print(t("cli_cancelled"))
                 return 0
-            raw_input = chosen_url
+            raw_urls = [chosen_url]
             if args.convert_format is None:
                 convert_format = chosen_convert
             save_convert_preference(cfg, convert_format, True)
         else:
             try:
-                raw_input = input(t("cli_paste_prompt")).strip()
+                entered = input(t("cli_paste_prompt")).strip()
+                if entered:
+                    raw_urls = [entered]
             except EOFError:
                 return 1
     elif args.convert_format is not None:
         save_convert_preference(cfg, convert_format, True)
-    elif not args.export_only and not did_first_run_setup and _can_use_gui_prompt(cfg, args.no_gui):
+    elif len(raw_urls) == 1 and not args.export_only and not did_first_run_setup and _can_use_gui_prompt(cfg, args.no_gui):
         # Single-window format selector (.flac / .aiff / .mp3) for every download
         # (Spotify or YouTube, playlist or album or track) unless explicit CLI flags or --no-gui were passed.
         gui_res = _prompt_with_gui(
             cfg,
-            raw_input,
+            raw_urls[0],
             convert_format,
-            label=_describe_source_url(raw_input),
+            label=_describe_source_url(raw_urls[0]),
         )
         if gui_res is not None:
             confirmed, chosen_url, chosen_convert = gui_res
             if not confirmed:
                 print(t("cli_cancelled"))
                 return 0
-            raw_input = chosen_url or raw_input
+            raw_urls = [chosen_url or raw_urls[0]]
             convert_format = chosen_convert
             save_convert_preference(cfg, convert_format, True)
 
-    try:
-        export = extract_collection(raw_input, cfg)
-        print_summary(export)
-        rc = download_collection(
-            export,
-            cfg,
-            export_only=args.export_only,
-            force_mode=args.mode,
+    if not raw_urls:
+        return 1
+
+    jobs = [
+        QueueJob(
+            url=u,
+            mode=args.mode,
             convert_format=convert_format,
-            delete_original=True,
+            delete_original=True if args.delete_original is None else bool(args.delete_original),
             open_finder=not args.no_finder,
             auto_tag=not args.no_tag,
         )
-    except KeyboardInterrupt:
-        print(t("cli_interrupted"))
-        rc = 130
-    except Exception as exc:
-        print(t("cli_error", exc=exc))
-        rc = 1
+        for u in raw_urls
+    ]
+
+    rc, enqueued_only = _run_or_enqueue_jobs(
+        jobs=jobs,
+        cfg=cfg,
+        export_only=args.export_only,
+        use_queue=not args.no_queue,
+    )
+
+    if enqueued_only:
+        # Brief pause only when launched via .command/.bat/.sh (--pause) so user sees the queue confirmation
+        # without leaving 10 stacked terminal windows waiting for Enter.
+        if args.pause:
+            try:
+                time.sleep(2.2)
+            except KeyboardInterrupt:
+                pass
+        return rc
 
     if args.pause or interactive:
         try:

@@ -48,6 +48,7 @@ Each installer automatically profiles your machine (**OS, CPU architecture, core
   - Enriches missing or noisy tags via native Spotify metadata, **iTunes Search API**, and **MusicBrainz + Cover Art Archive** (zero LLM required on standard PCs — 0 MB extra footprint; optionally leverages a local fine-tuned MiniCPM5-2B-MLX Tagger LoRA on Apple Silicon when present).
   - For mixed playlists, tags each track with its **true original studio album** metadata and artwork, rejecting generic *"Greatest Hits"* / *"Now That's What I Call Music"* compilations.
   - Writes all tags and cover art **losslessly** via `ffmpeg -c:a copy` (zero audio re-encoding). Disable with `--no-tag`.
+- **Download Queue & Overnight Mode**: start as many albums or playlists as you want in parallel (via Right-Click / Services, floating pill, browser extension, or passing multiple URLs on the CLI) — if another download is already active, new requests are automatically queued in FIFO order (preserving each item's chosen format) and executed sequentially in the active window so you never hit *"Soulseek account already logged in"* errors. While the queue is running, the machine is kept awake automatically (`caffeinate` on macOS, `SetThreadExecutionState` on Windows) so you can leave it running overnight. Inspect or clear waiting items anytime with `--queue-status` / `--clear-queue`.
 - **Automatic File Manager Reveal**: opens the downloaded album/playlist folder (or selects a single track) in **Finder** (macOS), **File Explorer** (Windows), or your **File Manager** (`xdg-open` / `nautilus` / `dolphin` on Linux) when finished.
 
 ---
@@ -72,4 +73,4 @@ Each installer automatically profiles your machine (**OS, CPU architecture, core
    # Windows (PowerShell)
    & "$env:LOCALAPPDATA\Soulseek Batch Download\Soulseek Batch Pipeline.bat" "URL"
    ```
-   Useful flags: `--setup`, `--export-only`, `--mode auto|album|tracks`, `--convert flac|aiff|mp3` (`--convert-aiff`, `--convert-mp3`, `--no-convert`), `--no-tag`, `--no-finder`, `--no-gui`, `--update`, `--no-update`.
+   Useful flags: `--setup`, `--export-only`, `--mode auto|album|tracks`, `--convert flac|aiff|mp3` (`--convert-aiff`, `--convert-mp3`, `--no-convert`), `--no-tag`, `--no-finder`, `--no-gui`, `--queue-status`, `--clear-queue`, `--no-queue`, `--update`, `--no-update`. You can also pass multiple URLs at once to queue them sequentially: `soulseek-batch "URL1" "URL2" "URL3"`.

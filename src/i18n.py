@@ -227,6 +227,18 @@ STRINGS: dict[str, dict[str, str]] = {
         "upd_downloading": "[Update] Nuova versione disponibile ({sha}), aggiorno automaticamente...",
         "upd_done": "[Update] Aggiornamento completato ({sha})! Riavvio con la nuova versione...\n",
         "upd_skipped": "[Update] Aggiornamento saltato ({exc}); continuo con la versione attuale.",
+        # Queue
+        "q_enqueued": "[Coda] Download già in corso — aggiunto in coda (posizione #{pos} in attesa): {url} [.{fmt}]",
+        "q_enqueued_multi": "[Coda] Aggiunti {count} download in coda (totale in attesa: {total}).",
+        "q_enqueued_hint": "[Coda] Partirà automaticamente nella finestra attiva appena termina il precedente. Puoi chiudere questa finestra.",
+        "q_next": "\n================ CODA: prossimo download ({remaining} rimasti in attesa) ================",
+        "q_next_item": "[Coda] Avvio: {url} [.{fmt}]",
+        "q_done_ok": "\n[Coda] Coda completata: {ok}/{total} download completati con successo!",
+        "q_done_partial": "\n[Coda] Coda completata: {ok}/{total} riusciti, {failed} con errori.",
+        "q_status_idle": "[Coda] Nessun download attivo. In attesa: {pending}.",
+        "q_status_active": "[Coda] Download attivo: {url} [.{fmt}] (PID {pid}) | In attesa: {pending}",
+        "q_cleared": "[Coda] Rimossi {count} download in attesa dalla coda.",
+        "q_empty": "[Coda] La coda è già vuota.",
     },
     "en": {
         # Kind labels
@@ -338,6 +350,18 @@ STRINGS: dict[str, dict[str, str]] = {
         "upd_downloading": "[Update] New version available ({sha}), updating automatically...",
         "upd_done": "[Update] Update complete ({sha})! Restarting with the new version...\n",
         "upd_skipped": "[Update] Update skipped ({exc}); continuing with current version.",
+        # Queue
+        "q_enqueued": "[Queue] Another download is running — added to queue (position #{pos} waiting): {url} [.{fmt}]",
+        "q_enqueued_multi": "[Queue] Added {count} downloads to the queue ({total} waiting).",
+        "q_enqueued_hint": "[Queue] It will start automatically in the active window once the current download finishes. You may close this window.",
+        "q_next": "\n================ QUEUE: next download ({remaining} left waiting) ================",
+        "q_next_item": "[Queue] Starting: {url} [.{fmt}]",
+        "q_done_ok": "\n[Queue] Queue complete: {ok}/{total} downloads succeeded!",
+        "q_done_partial": "\n[Queue] Queue complete: {ok}/{total} succeeded, {failed} failed.",
+        "q_status_idle": "[Queue] No active download. Waiting: {pending}.",
+        "q_status_active": "[Queue] Active download: {url} [.{fmt}] (PID {pid}) | Waiting: {pending}",
+        "q_cleared": "[Queue] Removed {count} waiting download(s) from the queue.",
+        "q_empty": "[Queue] The queue is already empty.",
     },
 }
 
